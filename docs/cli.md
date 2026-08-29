@@ -12,6 +12,7 @@ Usage:
   aris gen "<prompt>" [options]
   aris batch "<prompt>" [options]
   aris edit <image_path> "<prompt>" [options]
+  aris upscale <image_path> [options]
   aris gen "@<subagent> <prompt>"
   aris subagents [list|show|run]
 
@@ -19,6 +20,7 @@ Commands:
   gen, generate       Synthesize an image from natural language (or route via @name)
   batch               Batch generation, prompt matrix expansion & A/B benchmarking
   edit                Transform or inpaint reference images (img2img / inpaint)
+  upscale, superres   Super-resolution scaling (2x, 4x, 8x) & facial reconstruction
   chat, tui           Launch interactive Cyberpunk TUI (split-screen chat & controls)
   serve, ui           Launch ARIS Web Interface & REST/SSE Server (headless VPS mode)
   gui, desktop        Launch ARIS Desktop GUI (local window or remote VPS client)
@@ -152,7 +154,44 @@ aris edit character.png "remove sunglasses, realistic detailed blue eyes" --mask
 
 ---
 
-## 4. `aris tui` / `aris chat` — Interactive Cyberpunk TUI
+## 4. `aris upscale` / `aris superres` — Super-Resolution & Face Restoration
+
+Upscales low-resolution or generated images (2x, 4x, 8x multipliers) and optionally reconstructs facial anatomy using deep restoration models (CodeFormer, GFPGAN).
+
+### Syntax
+```bash
+aris upscale <image_path> [options]
+```
+
+### Options
+| Flag | Shorthand | Default | Description |
+|---|---|---|---|
+| `--scale <int>` | `-s` | `4` | Super-resolution multiplier: `2`, `4`, or `8` |
+| `--restore-faces` | — | `false` | Enable facial reconstruction and eye sharpening |
+| `--fidelity <float>` | `-f` | `0.75` | Facial fidelity weight `[0.0 - 1.0]` (0.0 = aggressive rebuild, 1.0 = strict source preservation) |
+| `--backend <val>` | `-b` | `falai` | Target backend: `falai`, `comfyui` |
+| `--model <val>` | `-m` | `""` | Upscaler model name (e.g. `fal-ai/esrgan`, `fal-ai/aura-sr`, `RealESRGAN_x4plus.pth`) |
+| `--output <path>` | `-o` | `""` | Explicit destination path for upscaled image |
+| `--critic` | — | `false` | Run VLM visual critique on upscaled output |
+
+### Examples
+```bash
+# Standard 4x upscale with Fal.ai
+aris upscale photo.png --scale 4 --backend falai
+
+# 4x upscale with deep face restoration and high fidelity
+aris upscale portrait.png --scale 4 --restore-faces --fidelity 0.85 -b falai
+
+# Local 2x upscale via ComfyUI with explicit output path
+aris upscale render.png -s 2 -b comfyui -o /tmp/hd_render.png
+
+# Direct routing via @upscaler subagent in gen command
+aris gen "@upscaler please upscale /tmp/portrait.png to 4k with high fidelity face restoration"
+```
+
+---
+
+## 5. `aris tui` / `aris chat` — Interactive Cyberpunk TUI
 
 Launches a terminal user interface powered by Bubbletea and Lipgloss.
 

@@ -133,6 +133,10 @@ func (p *PollinationsBackend) Generate(ctx context.Context, spec *domain.ImageSp
 		return nil, fmt.Errorf("backend 'pollinations' does not support masked inpainting; please use falai, comfyui, or openai")
 	}
 
+	if spec.IsUpscale() {
+		return nil, fmt.Errorf("backend 'pollinations' does not support super-resolution upscaling or face restoration; please use falai or comfyui")
+	}
+
 	start := time.Now()
 	targetURL := p.BuildURL(spec)
 

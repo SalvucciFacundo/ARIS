@@ -86,6 +86,10 @@ func (o *OpenAIBackend) Generate(ctx context.Context, spec *domain.ImageSpec) (*
 		return nil, fmt.Errorf("invalid spec: %w", err)
 	}
 
+	if spec.IsUpscale() {
+		return nil, fmt.Errorf("OpenAI DALL-E backend does not support standalone image upscaling or face restoration; please use falai or comfyui")
+	}
+
 	prompt := spec.EnhancedPrompt
 	if prompt == "" {
 		prompt = spec.RawPrompt

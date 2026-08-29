@@ -71,11 +71,14 @@ func (f *FalAIBackend) SupportsModels() []string {
 		"fal-ai/flux-realism",
 		"fal-ai/flux/dev/image-to-image",
 		"fal-ai/flux-general/inpainting",
+		"fal-ai/esrgan",
+		"fal-ai/aura-sr",
+		"fal-ai/creative-upscaler",
 	}
 }
 
 type falRequest struct {
-	Prompt              string  `json:"prompt"`
+	Prompt              string  `json:"prompt,omitempty"`
 	NegativePrompt      string  `json:"negative_prompt,omitempty"`
 	ImageSize           string  `json:"image_size,omitempty"`
 	NumInferenceSteps   int     `json:"num_inference_steps,omitempty"`
@@ -85,6 +88,9 @@ type falRequest struct {
 	ImageURL            string  `json:"image_url,omitempty"`
 	MaskURL             string  `json:"mask_url,omitempty"`
 	Strength            float64 `json:"strength,omitempty"`
+	Scale               int     `json:"scale,omitempty"`
+	FaceEnhancer        bool    `json:"face_enhancer,omitempty"`
+	FaceFidelity        float64 `json:"face_fidelity,omitempty"`
 }
 
 type falResponse struct {
@@ -136,7 +142,26 @@ func (f *FalAIBackend) Generate(ctx context.Context, spec *domain.ImageSpec) (*d
 		EnableSafetyChecker: false,
 	}
 
-	if spec.IsInpaint() {
+	if spec.IsUpscale() {
+		if model == "" || model == "flux" || model == "fal-ai/flux/schnell" {
+			if spec.UpscalerModel != "" {
+				model = spec.UpscalerModel
+			} else {
+				model = "fal-ai/esrgan"
+			}
+		}
+
+		baseURI, err := prepareImageURLOrDataURI(spec.InputImagePath)
+		if err != nil {
+			return nil, fmt.Errorf("prepare base image for upscale: %w", err)
+		}
+		reqPayload.ImageURL = baseURI
+		reqPayload.Scale = spec.ScaleFactor
+		reqPayload.FaceEnhancer = spec.RestoreFaces
+		if spec.RestoreFaces {
+			reqPayload.FaceFidelity = spec.FaceFidelity
+		}
+	} else if spec.IsInpaint() {
 		if model == "" || model == "flux" || model == "fal-ai/flux/schnell" {
 			model = "fal-ai/flux-general/inpainting"
 		}

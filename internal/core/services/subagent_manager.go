@@ -98,6 +98,10 @@ type PipelineOptions struct {
 	MaskImage       string
 	DenoiseStrength float64
 	Mode            domain.ReferenceMode
+	ScaleFactor     int
+	RestoreFaces    bool
+	FaceFidelity    float64
+	UpscalerModel   string
 	EnableCritic    bool
 }
 
@@ -109,6 +113,7 @@ type PipelineResult struct {
 	CriticScore       float64                `json:"critic_score"`
 	CriticCritique    string                 `json:"critic_critique"`
 	EnhancerAdvice    string                 `json:"enhancer_advice"`
+	UpscalerAdvice    string                 `json:"upscaler_advice,omitempty"`
 	CuratorSavedFacts []domain.KnowledgeFact `json:"curator_saved_facts,omitempty"`
 	Duration          time.Duration          `json:"duration"`
 }
@@ -191,6 +196,18 @@ func (m *SubagentManager) PipelineExecute(ctx context.Context, prompt string, op
 	if opts.DenoiseStrength > 0.0 {
 		spec.DenoiseStrength = opts.DenoiseStrength
 	}
+	if opts.ScaleFactor > 0 {
+		spec.ScaleFactor = opts.ScaleFactor
+	}
+	if opts.RestoreFaces {
+		spec.RestoreFaces = true
+	}
+	if opts.FaceFidelity > 0.0 {
+		spec.FaceFidelity = opts.FaceFidelity
+	}
+	if opts.UpscalerModel != "" {
+		spec.UpscalerModel = opts.UpscalerModel
+	}
 	spec.ApplyDefaults()
 
 	res.PromptSmithSpec = spec
@@ -225,12 +242,19 @@ func (m *SubagentManager) PipelineExecute(ctx context.Context, prompt string, op
 		}
 	}
 
-	// 5. @enhancer: Recommend post-processing / upscaling
+	// 5. @upscaler / @enhancer: Recommend post-processing / upscaling
 	enhancerPrompt := fmt.Sprintf("Image rendered at %dx%d with backend %s. Critic score: %.2f, notes: %s. Recommend post-processing and upscaling settings.",
 		spec.Width, spec.Height, spec.Backend, res.CriticScore, res.CriticCritique)
-	enhancerAdvice, eErr := m.ExecuteDirect(ctx, "enhancer", enhancerPrompt)
-	if eErr == nil {
-		res.EnhancerAdvice = enhancerAdvice
+	upscalerAdvice, uErr := m.ExecuteDirect(ctx, "upscaler", enhancerPrompt)
+	if uErr == nil {
+		res.UpscalerAdvice = upscalerAdvice
+		res.EnhancerAdvice = upscalerAdvice
+	} else {
+		enhancerAdvice, eErr := m.ExecuteDirect(ctx, "enhancer", enhancerPrompt)
+		if eErr == nil {
+			res.EnhancerAdvice = enhancerAdvice
+			res.UpscalerAdvice = enhancerAdvice
+		}
 	}
 
 	// 6. @curator: Save successful recipe to Knowledge Graph

@@ -60,6 +60,10 @@ type GenerateOptions struct {
 	MaskImage       string
 	DenoiseStrength float64
 	Mode            domain.ReferenceMode
+	ScaleFactor     int
+	RestoreFaces    bool
+	FaceFidelity    float64
+	UpscalerModel   string
 	Project         string
 	EnableCritic    bool
 	AutoHeal        bool
@@ -120,6 +124,18 @@ func (s *AgentService) Generate(ctx context.Context, input string, opts Generate
 	}
 	if opts.DenoiseStrength > 0.0 {
 		spec.DenoiseStrength = opts.DenoiseStrength
+	}
+	if opts.ScaleFactor > 0 {
+		spec.ScaleFactor = opts.ScaleFactor
+	}
+	if opts.RestoreFaces {
+		spec.RestoreFaces = true
+	}
+	if opts.FaceFidelity > 0.0 {
+		spec.FaceFidelity = opts.FaceFidelity
+	}
+	if opts.UpscalerModel != "" {
+		spec.UpscalerModel = opts.UpscalerModel
 	}
 	spec.ApplyDefaults()
 

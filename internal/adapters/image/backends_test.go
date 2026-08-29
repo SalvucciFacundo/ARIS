@@ -301,6 +301,224 @@ func TestOpenAIBackend_EditMultipart(t *testing.T) {
 	}
 }
 
+func TestFalAIBackend_UpscaleAndFaceRestorePayload(t *testing.T) {
+	tmpDir := t.TempDir()
+	baseImg := createTestPNGFile(t, tmpDir, "base.png", 64, 64)
+
+	var capturedPath string
+	var capturedPayload map[string]any
+
+	cdnServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte("FAL_UPSCALED_IMAGE"))
+	}))
+	defer cdnServer.Close()
+
+	falServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		capturedPath = r.URL.Path
+		bodyBytes, _ := io.ReadAll(r.Body)
+		_ = json.Unmarshal(bodyBytes, &capturedPayload)
+
+		resp := map[string]any{
+			"images": []map[string]any{
+				{
+					"url":          cdnServer.URL + "/upscaled.jpg",
+					"width":        256,
+					"height":       256,
+					"content_type": "image/jpeg",
+				},
+			},
+			"timings": map[string]any{
+				"inference": 1.25,
+			},
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(resp)
+	}))
+	defer falServer.Close()
+
+	backend := imgadapter.NewFalAIBackend("fake-fal-key", tmpDir, falServer.Client())
+
+	specUpscale := &domain.ImageSpec{
+		ID:             "fal-upscale-test",
+		Mode:           domain.ModeUpscale,
+		InputImagePath: baseImg,
+		ScaleFactor:    4,
+		RestoreFaces:   true,
+		FaceFidelity:   0.8,
+	}
+
+	result, err := backend.GenerateWithBaseURL(context.Background(), specUpscale, falServer.URL)
+	if err != nil {
+		t.Fatalf("Fal upscale failed: %v", err)
+	}
+	if result == nil || result.LocalPath == "" {
+		t.Fatalf("expected valid result from Fal upscale")
+	}
+
+	if !strings.Contains(capturedPath, "esrgan") && !strings.Contains(capturedPath, "aura-sr") {
+		t.Errorf("expected upscale endpoint (esrgan or aura-sr), got %s", capturedPath)
+	}
+	if capturedPayload["image_url"] == "" {
+		t.Errorf("expected image_url in upscale payload")
+	}
+	scaleVal, ok := capturedPayload["scale"].(float64)
+	if !ok || int(scaleVal) != 4 {
+		t.Errorf("expected scale 4 in payload, got %v", capturedPayload["scale"])
+	}
+	if restoreFaces, ok := capturedPayload["face_enhancer"].(bool); !ok || !restoreFaces {
+		if restoreAlt, ok := capturedPayload["restore_faces"].(bool); !ok || !restoreAlt {
+			t.Errorf("expected face enhancement toggle in payload")
+		}
+	}
+}
+
+func TestComfyUIBackend_UpscaleAndFaceRestoreGraph(t *testing.T) {
+	tmpDir := t.TempDir()
+	baseImg := createTestPNGFile(t, tmpDir, "base.png", 64, 64)
+
+	var uploadedImages []string
+	var promptGraph map[string]any
+
+	comfyServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case strings.HasPrefix(r.URL.Path, "/upload/image"):
+			uploadedImages = append(uploadedImages, "uploaded_file.png")
+			_ = json.NewEncoder(w).Encode(map[string]any{"name": "uploaded_file.png"})
+		case strings.HasPrefix(r.URL.Path, "/prompt"):
+			var body struct {
+				Prompt map[string]any `json:"prompt"`
+			}
+			_ = json.NewDecoder(r.Body).Decode(&body)
+			promptGraph = body.Prompt
+			_ = json.NewEncoder(w).Encode(map[string]any{"prompt_id": "comfy-upscale-123"})
+		case strings.HasPrefix(r.URL.Path, "/history/comfy-upscale-123"):
+			_ = json.NewEncoder(w).Encode(map[string]any{
+				"comfy-upscale-123": map[string]any{
+					"outputs": map[string]any{
+						"9": map[string]any{
+							"images": []map[string]any{
+								{"filename": "upscaled.png", "subfolder": "", "type": "output"},
+							},
+						},
+					},
+				},
+			})
+		case strings.HasPrefix(r.URL.Path, "/view"):
+			w.WriteHeader(http.StatusOK)
+			_, _ = w.Write([]byte("COMFY_UPSCALED_BYTES"))
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer comfyServer.Close()
+
+	backend := imgadapter.NewComfyUIBackend(comfyServer.URL, tmpDir, comfyServer.Client())
+
+	// 1. With Face Restoration
+	specWithFace := &domain.ImageSpec{
+		ID:             "comfy-upscale-face",
+		Mode:           domain.ModeUpscale,
+		InputImagePath: baseImg,
+		ScaleFactor:    4,
+		RestoreFaces:   true,
+		FaceFidelity:   0.85,
+	}
+
+	result, err := backend.Generate(context.Background(), specWithFace)
+	if err != nil {
+		t.Fatalf("ComfyUI upscale with face restore failed: %v", err)
+	}
+	if result == nil || result.LocalPath == "" {
+		t.Fatalf("expected valid result from ComfyUI upscale")
+	}
+
+	hasUpscaleNode := false
+	hasFaceRestoreNode := false
+	for _, node := range promptGraph {
+		if nodeMap, ok := node.(map[string]any); ok {
+			if classType, ok := nodeMap["class_type"].(string); ok {
+				if strings.Contains(classType, "Upscale") || strings.Contains(classType, "UpscaleModelLoader") {
+					hasUpscaleNode = true
+				}
+				if strings.Contains(classType, "FaceRestore") || strings.Contains(classType, "CodeFormer") || strings.Contains(classType, "GFPGAN") {
+					hasFaceRestoreNode = true
+				}
+			}
+		}
+	}
+	if !hasUpscaleNode {
+		t.Errorf("expected upscale node in workflow graph")
+	}
+	if !hasFaceRestoreNode {
+		t.Errorf("expected face restore node in workflow graph when RestoreFaces is true")
+	}
+
+	// 2. Without Face Restoration
+	specWithoutFace := &domain.ImageSpec{
+		ID:             "comfy-upscale-noface",
+		Mode:           domain.ModeUpscale,
+		InputImagePath: baseImg,
+		ScaleFactor:    2,
+		RestoreFaces:   false,
+	}
+
+	_, err = backend.Generate(context.Background(), specWithoutFace)
+	if err != nil {
+		t.Fatalf("ComfyUI upscale without face restore failed: %v", err)
+	}
+
+	hasFaceRestoreNode2 := false
+	for _, node := range promptGraph {
+		if nodeMap, ok := node.(map[string]any); ok {
+			if classType, ok := nodeMap["class_type"].(string); ok {
+				if strings.Contains(classType, "FaceRestore") || strings.Contains(classType, "CodeFormer") || strings.Contains(classType, "GFPGAN") {
+					hasFaceRestoreNode2 = true
+				}
+			}
+		}
+	}
+	if hasFaceRestoreNode2 {
+		t.Errorf("expected no face restore node when RestoreFaces is false")
+	}
+}
+
+func TestOpenAIBackend_UpscaleUnsupported(t *testing.T) {
+	backend := imgadapter.NewOpenAIBackend("test-key", "https://api.openai.com/v1", t.TempDir(), nil)
+
+	spec := &domain.ImageSpec{
+		Mode:           domain.ModeUpscale,
+		InputImagePath: "base.png",
+		ScaleFactor:    4,
+	}
+
+	_, err := backend.Generate(context.Background(), spec)
+	if err == nil {
+		t.Fatalf("expected error for unsupported OpenAI upscaling, got nil")
+	}
+	if !strings.Contains(err.Error(), "does not support") && !strings.Contains(err.Error(), "upscaling") {
+		t.Errorf("expected clear unsupported upscaling error, got: %v", err)
+	}
+}
+
+func TestPollinationsBackend_UpscaleUnsupported(t *testing.T) {
+	backend := imgadapter.NewPollinationsBackend()
+
+	spec := &domain.ImageSpec{
+		Mode:           domain.ModeUpscale,
+		InputImagePath: "base.png",
+		ScaleFactor:    4,
+	}
+
+	_, err := backend.Generate(context.Background(), spec)
+	if err == nil {
+		t.Fatalf("expected error for unsupported Pollinations upscaling, got nil")
+	}
+	if !strings.Contains(err.Error(), "does not support") && !strings.Contains(err.Error(), "upscaling") {
+		t.Errorf("expected clear unsupported upscaling error, got: %v", err)
+	}
+}
+
 func TestPollinationsBackend_InpaintUnsupported(t *testing.T) {
 	backend := imgadapter.NewPollinationsBackend()
 

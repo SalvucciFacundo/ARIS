@@ -27,11 +27,11 @@
 
 ---
 
-## 🔍 Milestone 3: Upscaling & Face Restoration (v1.2.0)
+## 🔍 Milestone 3: Upscaling & Face Restoration (v1.2.0) — [DONE]
 
-- [ ] **Super-Resolution Engine (`aris upscale`)**: 2x, 4x, 8x upscaling using Real-ESRGAN, SUPIR, and Flux Upscaler.
-- [ ] **Face Restoration Loop (`--restore-faces`)**: CodeFormer and GFPGAN face and eye fidelity corrections.
-- [ ] **Subagent `@upscaler`**: Dedicated prompt and resolution enhancer.
+- [x] **Super-Resolution Engine (`aris upscale`)**: 2x, 4x, 8x upscaling using Real-ESRGAN, SUPIR, and Flux Upscaler.
+- [x] **Face Restoration Loop (`--restore-faces`)**: CodeFormer and GFPGAN face and eye fidelity corrections.
+- [x] **Subagent `@upscaler`**: Dedicated prompt and resolution enhancer.
 
 ---
 

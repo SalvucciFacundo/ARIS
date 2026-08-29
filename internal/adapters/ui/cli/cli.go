@@ -119,6 +119,8 @@ func (r *Runner) Execute(args []string) int {
 		return r.handleGen(args[2:])
 	case "edit":
 		return r.handleEdit(args[2:])
+	case "upscale", "superres":
+		return r.handleUpscale(args[2:])
 	case "batch":
 		return r.handleBatch(args[2:])
 	case "subagents", "subagent", "sub":
@@ -149,6 +151,7 @@ Usage:
   aris gen "<prompt>" [options]
   aris batch "<prompt>" [options]
   aris edit <image_path> "<prompt>" [options]
+  aris upscale <image_path> [options]
   aris gen "@director <prompt>"
   aris subagents [list|show|run]
 
@@ -160,6 +163,7 @@ Commands:
   gen, generate       Synthesize image from natural language prompt (or route via @name)
   batch               Batch generation, prompt matrix expansion & A/B benchmarking
   edit                Transform or inpaint reference images (img2img / inpaint)
+  upscale, superres   Super-resolution scaling (2x, 4x, 8x) & facial reconstruction
   subagents, sub      Inspect and run specialized visual subagents
   backends, backend   List and inspect available local & cloud image backends
   memory, mem         Manage 3-scope Knowledge Graph (list, add, search)
@@ -177,19 +181,26 @@ Options for 'gen' and 'edit':
   --critic            Run VLM visual critique on generated output
   --auto-heal         Automatically retry if critique score is below threshold
 
+Options for 'upscale':
+  -s, --scale         Scale multiplier: 2, 4, or 8 (default: 4)
+  --restore-faces     Enable face artifact reconstruction (default: false)
+  -f, --fidelity      Face fidelity preservation weight [0.0 - 1.0] (default: 0.75)
+  -b, --backend       Target backend: falai, comfyui
+  -m, --model         Upscaler model name (e.g. fal-ai/esrgan, RealESRGAN_x4plus.pth)
+  -o, --output        Explicit output file destination
+
 Examples:
   aris gen "a cyberpunk cat in neo tokyo" --ratio 16:9 --backend pollinations
   aris edit input.png "cyberpunk neon overhaul" --strength 0.65 --backend falai
   aris edit portrait.png "remove glasses" --mask mask.png --backend comfyui
+  aris upscale photo.png --scale 4 --restore-faces --fidelity 0.80 -b falai
+  aris upscale lowres.png -s 2 -o /tmp/hd_image.png
   aris gen "@director a neon cyberpunk alley in neo tokyo"
   aris gen "@promptsmith: hyperrealistic portrait of a space explorer"
   aris subagents list
   aris subagents show inpainter
   aris subagents show restyler
-  aris chat
-  aris backends
-  aris memory add --topic "style:cyberpunk" --concept "lighting" --fact "neon reflections, volumetric fog"
-  aris history
+  aris subagents show upscaler
 `, Version)
 }
 

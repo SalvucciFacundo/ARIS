@@ -98,6 +98,10 @@ type ImageSpec struct {
 	InputImagePath  string         `json:"input_image_path,omitempty"`  // Base reference image (local path or URL)
 	MaskImagePath   string         `json:"mask_image_path,omitempty"`   // Inpainting mask image (local path or URL)
 	DenoiseStrength float64        `json:"denoise_strength,omitempty"` // [0.0, 1.0] divergence from source
+	ScaleFactor     int            `json:"scale_factor,omitempty"`     // 2, 4, 8 super-resolution scale
+	RestoreFaces    bool           `json:"restore_faces,omitempty"`    // Toggles facial reconstruction
+	FaceFidelity    float64        `json:"face_fidelity,omitempty"`    // [0.0, 1.0] facial fidelity weighting
+	UpscalerModel   string         `json:"upscaler_model,omitempty"`   // Specific upscaler or face model name
 	ExtraParams     map[string]any `json:"extra_params,omitempty"`
 	CreatedAt       time.Time      `json:"created_at"`
 }
@@ -107,7 +111,7 @@ func (s *ImageSpec) IsImg2Img() bool {
 	if s.Mode == ModeImg2Img || s.Mode == ModeStyleTransfer {
 		return true
 	}
-	return s.InputImagePath != "" && s.MaskImagePath == "" && s.Mode != ModeInpaint
+	return s.InputImagePath != "" && s.MaskImagePath == "" && s.Mode != ModeInpaint && !s.IsUpscale()
 }
 
 // IsInpaint returns true if the spec describes an inpainting task.
@@ -118,10 +122,17 @@ func (s *ImageSpec) IsInpaint() bool {
 	return s.MaskImagePath != ""
 }
 
-// ApplyDefaults applies default values for mode, denoise strength, and clamps parameters.
+// IsUpscale returns true if the spec describes an upscaling or face restoration task.
+func (s *ImageSpec) IsUpscale() bool {
+	return s.Mode == ModeUpscale || s.ScaleFactor > 1 || s.RestoreFaces
+}
+
+// ApplyDefaults applies default values for mode, denoise strength, scale factors, and clamps parameters.
 func (s *ImageSpec) ApplyDefaults() {
 	if s.Mode == "" {
-		if s.MaskImagePath != "" {
+		if s.IsUpscale() {
+			s.Mode = ModeUpscale
+		} else if s.MaskImagePath != "" {
 			s.Mode = ModeInpaint
 		} else if s.InputImagePath != "" {
 			s.Mode = ModeImg2Img
@@ -130,7 +141,23 @@ func (s *ImageSpec) ApplyDefaults() {
 		}
 	}
 
-	if s.Mode != ModeText2Img && s.DenoiseStrength == 0.0 {
+	if s.IsUpscale() {
+		if s.ScaleFactor == 0 {
+			s.ScaleFactor = 4
+		}
+		if s.RestoreFaces {
+			if s.FaceFidelity == 0.0 {
+				s.FaceFidelity = 0.75
+			}
+			if s.FaceFidelity < 0.0 {
+				s.FaceFidelity = 0.0
+			} else if s.FaceFidelity > 1.0 {
+				s.FaceFidelity = 1.0
+			}
+		}
+	}
+
+	if s.Mode != ModeText2Img && s.Mode != ModeUpscale && s.DenoiseStrength == 0.0 {
 		s.DenoiseStrength = 0.70
 	}
 
@@ -146,6 +173,11 @@ func (s *ImageSpec) ApplyDefaults() {
 func (s *ImageSpec) Validate() error {
 	if s.MaskImagePath != "" && s.InputImagePath == "" {
 		return fmt.Errorf("mask requires a base reference image")
+	}
+	if s.IsUpscale() {
+		if s.ScaleFactor != 2 && s.ScaleFactor != 4 && s.ScaleFactor != 8 {
+			return fmt.Errorf("unsupported scale factor %d: supported scale factors are 2, 4, and 8", s.ScaleFactor)
+		}
 	}
 	return nil
 }

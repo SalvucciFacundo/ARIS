@@ -184,6 +184,18 @@ func TestSubagentManager_VisualSubagents(t *testing.T) {
 	llmProvider := &MockLLMProvider{}
 	mgr := services.NewSubagentManager(store, llmProvider, nil, nil, nil)
 
+	// Verify @upscaler preset exists
+	upscaler, err := mgr.GetSubagent(ctx, "upscaler")
+	if err != nil {
+		t.Fatalf("expected @upscaler subagent to exist: %v", err)
+	}
+	if upscaler.Name != "upscaler" {
+		t.Errorf("expected name upscaler, got %s", upscaler.Name)
+	}
+	if upscaler.Role != "Image Enhancement & Artifact Restoration" && upscaler.Role != "Super-Resolution & Face Restoration Specialist" {
+		t.Errorf("unexpected role for @upscaler: %s", upscaler.Role)
+	}
+
 	// Verify @inpainter preset exists
 	inpainter, err := mgr.GetSubagent(ctx, "inpainter")
 	if err != nil {
@@ -200,5 +212,57 @@ func TestSubagentManager_VisualSubagents(t *testing.T) {
 	}
 	if restyler.Name != "restyler" {
 		t.Errorf("expected name restyler, got %s", restyler.Name)
+	}
+}
+
+func TestAgentService_GenerateUpscaleOptions(t *testing.T) {
+	llmProvider := llm.NewPassthroughProvider()
+	reg := image.NewRegistry()
+	mockBackend := &MockBackend{
+		name: "mock-backend",
+		generateFunc: func(ctx context.Context, spec *domain.ImageSpec) (*domain.ImageResult, error) {
+			return &domain.ImageResult{
+				ID:        "res-upscale-1",
+				SpecID:    spec.ID,
+				LocalPath: "/tmp/upscaled.png",
+			}, nil
+		},
+	}
+	_ = reg.Register(mockBackend)
+	_ = reg.SetDefault("mock-backend")
+
+	agent := services.NewAgentService(llmProvider, reg, nil, nil, nil)
+	ctx := context.Background()
+
+	optsUpscale := services.GenerateOptions{
+		InputImage:    "/tmp/portrait.png",
+		Mode:          domain.ModeUpscale,
+		ScaleFactor:   4,
+		RestoreFaces:  true,
+		FaceFidelity:  0.80,
+		UpscalerModel: "RealESRGAN_x4plus",
+	}
+
+	spec, res, err := agent.Generate(ctx, "upscale portrait to 4k with face restoration", optsUpscale)
+	if err != nil {
+		t.Fatalf("Generate upscale failed: %v", err)
+	}
+	if res == nil {
+		t.Fatal("expected non-nil result")
+	}
+	if !spec.IsUpscale() {
+		t.Errorf("expected IsUpscale to be true")
+	}
+	if spec.ScaleFactor != 4 {
+		t.Errorf("expected ScaleFactor 4, got %d", spec.ScaleFactor)
+	}
+	if !spec.RestoreFaces {
+		t.Errorf("expected RestoreFaces true")
+	}
+	if spec.FaceFidelity != 0.80 {
+		t.Errorf("expected FaceFidelity 0.80, got %f", spec.FaceFidelity)
+	}
+	if spec.UpscalerModel != "RealESRGAN_x4plus" {
+		t.Errorf("expected UpscalerModel RealESRGAN_x4plus, got %s", spec.UpscalerModel)
 	}
 }

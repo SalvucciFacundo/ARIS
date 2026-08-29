@@ -147,6 +147,67 @@ func (c *ComfyUIBackend) buildComfyGraph(ctx context.Context, spec *domain.Image
 		denoise = spec.DenoiseStrength
 	}
 
+	if spec.IsUpscale() {
+		baseName, err := c.uploadImage(ctx, spec.InputImagePath)
+		if err != nil {
+			return nil, fmt.Errorf("upload upscale base image: %w", err)
+		}
+
+		upscalerModel := spec.UpscalerModel
+		if upscalerModel == "" {
+			upscalerModel = "RealESRGAN_x4plus.pth"
+		}
+
+		graph := map[string]any{
+			"10": map[string]any{
+				"class_type": "LoadImage",
+				"inputs": map[string]any{
+					"image": baseName,
+				},
+			},
+			"13": map[string]any{
+				"class_type": "UpscaleModelLoader",
+				"inputs": map[string]any{
+					"model_name": upscalerModel,
+				},
+			},
+			"14": map[string]any{
+				"class_type": "ImageUpscaleWithModel",
+				"inputs": map[string]any{
+					"image":         []any{"10", 0},
+					"upscale_model": []any{"13", 0},
+				},
+			},
+		}
+
+		if spec.RestoreFaces {
+			graph["15"] = map[string]any{
+				"class_type": "FaceRestoreCFWithModel",
+				"inputs": map[string]any{
+					"fidelity": spec.FaceFidelity,
+					"image":    []any{"14", 0},
+				},
+			}
+			graph["9"] = map[string]any{
+				"class_type": "SaveImage",
+				"inputs": map[string]any{
+					"filename_prefix": "ARIS_UPSCALE",
+					"images":          []any{"15", 0},
+				},
+			}
+		} else {
+			graph["9"] = map[string]any{
+				"class_type": "SaveImage",
+				"inputs": map[string]any{
+					"filename_prefix": "ARIS_UPSCALE",
+					"images":          []any{"14", 0},
+				},
+			}
+		}
+
+		return graph, nil
+	}
+
 	if spec.IsInpaint() {
 		baseName, err := c.uploadImage(ctx, spec.InputImagePath)
 		if err != nil {
