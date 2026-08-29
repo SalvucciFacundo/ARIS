@@ -104,22 +104,26 @@ ARIS features built-in expert visual subagents that can be targeted via direct `
 curl -fsSL https://raw.githubusercontent.com/SalvucciFacundo/ARIS/main/install.sh | bash
 ```
 
-### 🐧 Linux Native Packages (Debian, Ubuntu, Fedora, Alpine)
+### 🐧 Linux Native Packages (Debian, Ubuntu, Fedora, Arch, Alpine)
 Download the native package for your distribution from [GitHub Releases](https://github.com/SalvucciFacundo/ARIS/releases):
 
 - **Debian / Ubuntu / Mint / Pop!_OS (`.deb`):**
   ```bash
-  sudo dpkg -i aris_*_linux_amd64.deb
+  sudo dpkg -i aris_*_amd64.deb
   ```
 - **Fedora / RHEL / openSUSE (`.rpm`):**
   ```bash
   sudo rpm -i aris-*.x86_64.rpm
   ```
+- **Arch Linux / CachyOS / Manjaro (`.pkg.tar.zst`):**
+  ```bash
+  sudo pacman -U aris-*-x86_64.pkg.tar.zst
+  ```
 - **Alpine Linux (`.apk`):**
   ```bash
-  apk add --allow-untrusted aris_*_linux_amd64.apk
+  apk add --allow-untrusted aris_*_x86_64.apk
   ```
-- **Arch / Gentoo / Universal (`.tar.gz` or Standalone binary):**
+- **Universal Linux (`.tar.gz` or Standalone Binary):**
   Download `aris-linux-amd64`, `chmod +x aris-linux-amd64`, and move to `/usr/local/bin/aris`.
 
 ### 🐹 Install via Go (Go 1.23+)

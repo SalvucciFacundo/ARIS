@@ -10,7 +10,7 @@ permissions:
 
 jobs:
   release:
-    name: Build & Release Multi-Platform Binaries & Linux Packages (.deb, .rpm, .apk, .tar.gz)
+    name: Build & Release Multi-Platform Binaries & Linux Packages (.deb, .rpm, .apk, .pkg.tar.zst, .tar.gz)
     runs-on: ubuntu-latest
     steps:
       - name: Checkout repository
@@ -74,15 +74,20 @@ jobs:
             fi
           done
 
-          # 2. Package Linux native formats (.deb, .rpm, .apk) using nfpm
+          # 2. Package Linux native formats (.deb, .rpm, .apk, .pkg.tar.zst) using nfpm
           for ARCH in amd64 arm64; do
-            echo "📦 Building .deb, .rpm, .apk for Linux $ARCH..."
+            echo "📦 Building Linux packages for $ARCH..."
+            cp "dist/bin/aris-linux-${ARCH}" "dist/bin/aris"
+            
             VERSION="$VERSION_CLEAN" ARCH="$ARCH" nfpm pkg --packager deb --target dist/packages/
             VERSION="$VERSION_CLEAN" ARCH="$ARCH" nfpm pkg --packager rpm --target dist/packages/
             VERSION="$VERSION_CLEAN" ARCH="$ARCH" nfpm pkg --packager apk --target dist/packages/
+            VERSION="$VERSION_CLEAN" ARCH="$ARCH" nfpm pkg --packager archlinux --target dist/packages/
+            
+            rm "dist/bin/aris"
           done
 
-          # 3. Copy standalone binaries to root of release distribution
+          # 3. Copy standalone binaries directly to release distribution
           cp dist/bin/* dist/packages/
 
           # 4. Generate SHA-256 Checksums

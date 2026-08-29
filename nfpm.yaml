@@ -1,4 +1,4 @@
-# nFPM configuration for ARIS (Debian, RedHat, Alpine packages)
+# nFPM configuration for ARIS (Debian, RedHat, Alpine, Arch Linux packages)
 name: "aris"
 arch: "${ARCH}"
 platform: "linux"
@@ -11,7 +11,7 @@ vendor: "SalvucciFacundo"
 homepage: "https://github.com/SalvucciFacundo/ARIS"
 license: "MIT"
 contents:
-  - src: dist/bin/aris-linux-${ARCH}
+  - src: dist/bin/aris
     dst: /usr/bin/aris
     file_info:
       mode: 0755
