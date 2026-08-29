@@ -1,0 +1,10 @@
+schema: "spec-driven"
+version: "1.0"
+project: "ARIS"
+description: "Autonomous Reasoner for Image System in pure Go"
+artifact_store: "hybrid"
+standards:
+  language: "go"
+  go_version: "1.23+"
+  architecture: "hexagonal"
+  testing: "strict-tdd"

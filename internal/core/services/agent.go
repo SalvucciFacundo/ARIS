@@ -1,0 +1,186 @@
+package services
+
+import (
+	"context"
+	"fmt"
+	"strings"
+	"time"
+
+	"aris/internal/core/domain"
+	"aris/internal/core/ports"
+)
+
+// AgentService is the core orchestrator of ARIS.
+type AgentService struct {
+	llm      ports.LLMProvider
+	registry ports.BackendRegistry
+	kg       ports.KnowledgeGraphStore
+	history  ports.HistoryStore
+	critic   ports.VisionCritic
+}
+
+// NewAgentService creates a new ARIS agent service.
+func NewAgentService(
+	llm ports.LLMProvider,
+	registry ports.BackendRegistry,
+	kg ports.KnowledgeGraphStore,
+	history ports.HistoryStore,
+	critic ports.VisionCritic,
+) *AgentService {
+	return &AgentService{
+		llm:      llm,
+		registry: registry,
+		kg:       kg,
+		history:  history,
+		critic:   critic,
+	}
+}
+
+// GenerateOptions contains overrides for a single generation request.
+type GenerateOptions struct {
+	AspectRatio    domain.AspectRatio
+	Model          string
+	Backend        string
+	Seed           int64
+	NegativePrompt string
+	InputImage     string
+	Project        string
+}
+
+// Generate runs the autonomous lifecycle: Recall -> Reason -> Synthesize -> Persist.
+func (s *AgentService) Generate(ctx context.Context, input string, opts GenerateOptions) (*domain.ImageSpec, *domain.ImageResult, error) {
+	if strings.TrimSpace(input) == "" {
+		return nil, nil, fmt.Errorf("prompt cannot be empty")
+	}
+
+	// 1. RECALL: Query Knowledge Graph for relevant facts and styles
+	var recalledFacts []domain.KnowledgeFact
+	if s.kg != nil {
+		facts, err := s.kg.SearchFacts(ctx, input, "", 5)
+		if err == nil {
+			recalledFacts = facts
+		}
+	}
+
+	// 2. REASON: LLM / Heuristic acts as Art Director & Prompt Architect
+	spec, err := s.llm.ReasonPrompt(ctx, input, recalledFacts)
+	if err != nil {
+		return nil, nil, fmt.Errorf("reasoning failed: %w", err)
+	}
+
+	// Apply CLI/User overrides
+	if opts.AspectRatio != "" {
+		spec.AspectRatio = opts.AspectRatio
+		w, h := opts.AspectRatio.Dimensions(1024)
+		spec.Width = w
+		spec.Height = h
+	}
+	if opts.Model != "" {
+		spec.Model = opts.Model
+	}
+	if opts.Backend != "" {
+		spec.Backend = opts.Backend
+	}
+	if opts.Seed > 0 {
+		spec.Seed = opts.Seed
+	}
+	if opts.NegativePrompt != "" {
+		if spec.NegativePrompt != "" {
+			spec.NegativePrompt = spec.NegativePrompt + ", " + opts.NegativePrompt
+		} else {
+			spec.NegativePrompt = opts.NegativePrompt
+		}
+	}
+	if opts.InputImage != "" {
+		spec.InputImagePath = opts.InputImage
+	}
+
+	// 3. DISPATCH & RENDER: Resolve Image Backend from Registry
+	var targetBackend ports.ImageBackend
+	if opts.Backend != "" {
+		b, err := s.registry.Get(opts.Backend)
+		if err != nil {
+			return spec, nil, fmt.Errorf("resolve backend: %w", err)
+		}
+		targetBackend = b
+	} else if spec.Backend != "" {
+		b, err := s.registry.Get(spec.Backend)
+		if err == nil {
+			targetBackend = b
+		}
+	}
+
+	if targetBackend == nil {
+		targetBackend = s.registry.GetDefault()
+	}
+	if targetBackend == nil {
+		return spec, nil, fmt.Errorf("no image backend available in registry")
+	}
+
+	spec.Backend = targetBackend.Name()
+
+	result, err := targetBackend.Generate(ctx, spec)
+	if err != nil {
+		return spec, nil, fmt.Errorf("backend %s generation failed: %w", targetBackend.Name(), err)
+	}
+
+	// 4. (Optional) CRITIC & SELF-CORRECTION
+	if s.critic != nil {
+		score, critique, err := s.critic.Evaluate(ctx, result.LocalPath, spec)
+		if err == nil && score < 0.5 {
+			// Log critique and attempt a seed re-roll or refinement if needed
+			if result.Metadata == nil {
+				result.Metadata = make(map[string]any)
+			}
+			result.Metadata["critic_score"] = score
+			result.Metadata["critic_notes"] = critique
+		}
+	}
+
+	// 5. PERSIST: Save to SQLite History
+	if s.history != nil {
+		_ = s.history.SaveGeneration(ctx, spec, result)
+	}
+
+	return spec, result, nil
+}
+
+// Registry returns the backend registry.
+func (s *AgentService) Registry() ports.BackendRegistry {
+	return s.registry
+}
+
+// LearnFact saves a newly discovered style or user preference into the Knowledge Graph.
+func (s *AgentService) LearnFact(ctx context.Context, topic, concept, fact string, scope domain.MemoryScope, labels []string) (string, error) {
+	if s.kg == nil {
+		return "", fmt.Errorf("knowledge graph not initialized")
+	}
+
+	kf := domain.KnowledgeFact{
+		Topic:       topic,
+		Concept:     concept,
+		Fact:        fact,
+		SourceAgent: "user",
+		Labels:      labels,
+		Scope:       scope,
+		CreatedAt:   time.Now(),
+	}
+
+	return s.kg.AddFact(ctx, kf)
+}
+
+// SearchMemory retrieves facts from the Knowledge Graph.
+func (s *AgentService) SearchMemory(ctx context.Context, query string, scope domain.MemoryScope, limit int) ([]domain.KnowledgeFact, error) {
+	if s.kg == nil {
+		return nil, fmt.Errorf("knowledge graph not initialized")
+	}
+	return s.kg.SearchFacts(ctx, query, scope, limit)
+}
+
+// GetHistory retrieves past generation history.
+func (s *AgentService) GetHistory(ctx context.Context, limit, offset int) ([]domain.GenerationRecord, error) {
+	if s.history == nil {
+		return nil, fmt.Errorf("history store not initialized")
+	}
+	return s.history.GetHistory(ctx, limit, offset)
+}

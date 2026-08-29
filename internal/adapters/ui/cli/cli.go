@@ -1,0 +1,339 @@
+package cli
+
+import (
+	"context"
+	"flag"
+	"fmt"
+	"strings"
+	"time"
+
+	"aris/internal/adapters/db"
+	"aris/internal/adapters/image"
+	"aris/internal/adapters/llm"
+	"aris/internal/config"
+	"aris/internal/core/domain"
+	"aris/internal/core/ports"
+	"aris/internal/core/services"
+)
+
+// Version of ARIS
+const Version = "v1.0.0-dev"
+
+// Runner manages CLI execution.
+type Runner struct {
+	cfg   *config.Config
+	agent *services.AgentService
+	db    *db.SQLiteDB
+}
+
+// NewRunner sets up database, LLM provider, backend, and agent service.
+func NewRunner() (*Runner, error) {
+	cfg, err := config.LoadConfig()
+	if err != nil {
+		return nil, fmt.Errorf("load config: %w", err)
+	}
+
+	sqlDB, err := db.NewDefaultSQLiteDB()
+	if err != nil {
+		return nil, fmt.Errorf("init sqlite db: %w", err)
+	}
+
+	kg := db.NewKnowledgeGraph(sqlDB.DB())
+	history := db.NewHistoryStore(sqlDB.DB())
+
+	var llmProvider ports.LLMProvider
+	if cfg.LLM.Provider != "passthrough" && cfg.LLM.APIKey != "" {
+		llmProvider = llm.NewOpenAIClient(cfg.LLM.Provider, cfg.LLM.APIKey, cfg.LLM.BaseURL, cfg.LLM.Model)
+	} else {
+		llmProvider = llm.NewPassthroughProvider()
+	}
+
+	// Setup Image Backend Registry with multi-backend suite
+	reg := image.NewRegistry()
+	_ = reg.Register(image.NewPollinationsBackend(image.WithOutputDir(cfg.Image.OutputDir)))
+	_ = reg.Register(image.NewComfyUIBackend(cfg.Image.ComfyUIHost, cfg.Image.OutputDir, nil))
+	_ = reg.Register(image.NewFalAIBackend(cfg.Image.FalKey, cfg.Image.OutputDir, nil))
+	_ = reg.Register(image.NewReplicateBackend(cfg.Image.ReplicateToken, cfg.Image.OutputDir, nil))
+	_ = reg.Register(image.NewOpenAIBackend(cfg.Image.OpenAIKey, "", cfg.Image.OutputDir, nil))
+	_ = reg.Register(image.NewHuggingFaceBackend(cfg.Image.HFToken, cfg.Image.OutputDir, nil))
+
+	if cfg.Image.DefaultBackend != "" {
+		_ = reg.SetDefault(cfg.Image.DefaultBackend)
+	}
+
+	agent := services.NewAgentService(llmProvider, reg, kg, history, nil)
+
+	return &Runner{
+		cfg:   cfg,
+		agent: agent,
+		db:    sqlDB,
+	}, nil
+}
+
+// Close releases resources.
+func (r *Runner) Close() {
+	if r.db != nil {
+		_ = r.db.Close()
+	}
+}
+
+// Execute parses args and runs the corresponding command.
+func (r *Runner) Execute(args []string) int {
+	if len(args) < 2 {
+		r.printHelp()
+		return 0
+	}
+
+	switch args[1] {
+	case "gen", "generate":
+		return r.handleGen(args[2:])
+	case "backends", "backend":
+		return r.handleBackends(args[2:])
+	case "memory", "mem":
+		return r.handleMemory(args[2:])
+	case "history", "hist":
+		return r.handleHistory(args[2:])
+	case "version", "-v", "--version":
+		fmt.Printf("ARIS (Autonomous Reasoner for Image System) %s\n", Version)
+		return 0
+	case "help", "-h", "--help":
+		r.printHelp()
+		return 0
+	default:
+		// If user types: aris "a cat on the moon"
+		return r.handleGen(args[1:])
+	}
+}
+
+func (r *Runner) printHelp() {
+	fmt.Printf(`ARIS — Autonomous Reasoner for Image System (%s)
+
+Usage:
+  aris <command> [options]
+  aris gen "<prompt>" [options]
+
+Commands:
+  gen, generate       Synthesize image from natural language prompt
+  backends, backend   List and inspect available local & cloud image backends
+  memory, mem         Manage 3-scope Knowledge Graph (list, add, search)
+  history, hist       View past generations log
+  version             Show version info
+  help                Show this help message
+
+Options for 'gen':
+  -b, --backend       Image backend: pollinations, comfyui, falai, replicate, openai, huggingface
+  -m, --model         Model name (e.g. flux, flux-realism, dall-e-3, sd-3.5)
+  -r, --ratio         Aspect ratio: 1:1, 16:9, 9:16, 4:3, 3:4, 21:9 (default: 1:1)
+  -s, --seed          Seed for reproducibility (default: random)
+  -n, --negative      Negative prompt keywords
+
+Examples:
+  aris gen "a cyberpunk cat in neo tokyo" --ratio 16:9 --backend pollinations
+  aris gen "hyperrealistic portrait of an old sailor" --backend falai --model fal-ai/flux/dev
+  aris gen "anime landscape" --backend comfyui
+  aris backends
+  aris memory add --topic "style:cyberpunk" --concept "lighting" --fact "neon reflections, volumetric fog"
+  aris history
+`, Version)
+}
+
+func (r *Runner) handleBackends(args []string) int {
+	reg := r.agent.Registry()
+	backends := reg.List()
+	def := reg.GetDefault()
+	defName := ""
+	if def != nil {
+		defName = def.Name()
+	}
+
+	fmt.Printf("🔌 ARIS Registered Image Backends (%d available):\n\n", len(backends))
+	for i, name := range backends {
+		b, _ := reg.Get(name)
+		marker := "  "
+		if name == defName {
+			marker = "⭐ [DEFAULT] "
+		}
+		fmt.Printf("%d. %s%s\n", i+1, marker, name)
+		if len(b.SupportsModels()) > 0 {
+			fmt.Printf("   Supported Models: %s\n", strings.Join(b.SupportsModels(), ", "))
+		}
+		fmt.Println()
+	}
+	return 0
+}
+
+func (r *Runner) handleGen(args []string) int {
+	if len(args) == 0 {
+		fmt.Println("❌ Error: prompt is required.")
+		fmt.Println("Usage: aris gen \"<your prompt>\" [options]")
+		return 1
+	}
+
+	genFlags := flag.NewFlagSet("gen", flag.ContinueOnError)
+	ratioFlag := genFlags.String("ratio", "1:1", "Aspect ratio (1:1, 16:9, 9:16, 4:3, 3:4, 21:9)")
+	_ = genFlags.String("r", "1:1", "Shorthand for ratio")
+	modelFlag := genFlags.String("model", "flux", "Generation model")
+	_ = genFlags.String("m", "flux", "Shorthand for model")
+	seedFlag := genFlags.Int64("seed", 0, "Seed value")
+	_ = genFlags.Int64("s", 0, "Shorthand for seed")
+	negFlag := genFlags.String("negative", "", "Negative prompt")
+	_ = genFlags.String("n", "", "Shorthand for negative")
+	backendFlag := genFlags.String("backend", "pollinations", "Backend provider")
+	_ = genFlags.String("b", "pollinations", "Shorthand for backend")
+
+	// Parse flags while leaving raw prompt intact
+	var promptParts []string
+	var flagArgs []string
+
+	for i := 0; i < len(args); i++ {
+		arg := args[i]
+		if strings.HasPrefix(arg, "-") {
+			flagArgs = append(flagArgs, arg)
+			if i+1 < len(args) && !strings.HasPrefix(args[i+1], "-") {
+				flagArgs = append(flagArgs, args[i+1])
+				i++
+			}
+		} else {
+			promptParts = append(promptParts, arg)
+		}
+	}
+
+	_ = genFlags.Parse(flagArgs)
+
+	rawPrompt := strings.Join(promptParts, " ")
+	if strings.TrimSpace(rawPrompt) == "" {
+		fmt.Println("❌ Error: prompt cannot be empty.")
+		return 1
+	}
+
+	opts := services.GenerateOptions{
+		AspectRatio:    domain.ParseAspectRatio(*ratioFlag),
+		Model:          *modelFlag,
+		Backend:        *backendFlag,
+		Seed:           *seedFlag,
+		NegativePrompt: *negFlag,
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 120*time.Second)
+	defer cancel()
+
+	fmt.Printf("🎨 ARIS Reasoning over: %q\n", rawPrompt)
+	fmt.Printf("⏳ Consulting Knowledge Graph & dispatching to %s (%s)...\n", opts.Backend, opts.Model)
+
+	start := time.Now()
+	spec, result, err := r.agent.Generate(ctx, rawPrompt, opts)
+	if err != nil {
+		fmt.Printf("❌ Generation failed: %v\n", err)
+		return 1
+	}
+
+	fmt.Printf("\n✨ Image Generated Successfully in %v!\n", time.Since(start).Round(time.Millisecond))
+	fmt.Printf("📐 Dimensions: %dx%d (Ratio: %s)\n", spec.Width, spec.Height, spec.AspectRatio)
+	fmt.Printf("🌱 Seed:       %d\n", spec.Seed)
+	fmt.Printf("🧠 Prompt:     %s\n", spec.EnhancedPrompt)
+	if spec.NegativePrompt != "" {
+		fmt.Printf("🚫 Negative:   %s\n", spec.NegativePrompt)
+	}
+	fmt.Printf("💾 Saved to:   %s\n", result.LocalPath)
+	return 0
+}
+
+func (r *Runner) handleMemory(args []string) int {
+	if len(args) == 0 {
+		args = []string{"list"}
+	}
+
+	subcmd := args[0]
+	ctx := context.Background()
+
+	switch subcmd {
+	case "list", "ls":
+		scope := ""
+		if len(args) > 1 {
+			scope = args[1]
+		}
+		facts, err := r.agent.SearchMemory(ctx, "", domain.MemoryScope(scope), 50)
+		if err != nil {
+			fmt.Printf("❌ Failed to list memory: %v\n", err)
+			return 1
+		}
+		if len(facts) == 0 {
+			fmt.Println("🧠 Knowledge Graph is currently empty.")
+			return 0
+		}
+		fmt.Printf("🧠 Knowledge Graph Facts (%d items):\n\n", len(facts))
+		for _, f := range facts {
+			fmt.Printf("[%s] %s -> %s: %s\n", f.Scope, f.Topic, f.Concept, f.Fact)
+		}
+		return 0
+
+	case "search", "find":
+		if len(args) < 2 {
+			fmt.Println("Usage: aris memory search \"<keyword>\"")
+			return 1
+		}
+		query := strings.Join(args[1:], " ")
+		facts, err := r.agent.SearchMemory(ctx, query, "", 20)
+		if err != nil {
+			fmt.Printf("❌ Search failed: %v\n", err)
+			return 1
+		}
+		if len(facts) == 0 {
+			fmt.Printf("No facts found matching %q.\n", query)
+			return 0
+		}
+		fmt.Printf("🔍 Matching Facts for %q (%d results):\n\n", query, len(facts))
+		for _, f := range facts {
+			fmt.Printf("[%s] %s -> %s: %s\n", f.Scope, f.Topic, f.Concept, f.Fact)
+		}
+		return 0
+
+	case "add":
+		addFlags := flag.NewFlagSet("memory add", flag.ExitOnError)
+		topic := addFlags.String("topic", "pref:general", "Topic name")
+		concept := addFlags.String("concept", "general", "Concept key")
+		fact := addFlags.String("fact", "", "Fact description")
+		scope := addFlags.String("scope", "style", "Scope: user, style, project")
+
+		_ = addFlags.Parse(args[1:])
+
+		if *fact == "" {
+			fmt.Println("❌ Error: --fact is required.")
+			return 1
+		}
+
+		id, err := r.agent.LearnFact(ctx, *topic, *concept, *fact, domain.MemoryScope(*scope), []string{*topic, *concept})
+		if err != nil {
+			fmt.Printf("❌ Failed to add fact: %v\n", err)
+			return 1
+		}
+		fmt.Printf("✅ Saved fact [%s] with ID: %s\n", *topic, id)
+		return 0
+
+	default:
+		fmt.Printf("Unknown memory command: %s\n", subcmd)
+		fmt.Println("Available: list, search, add")
+		return 1
+	}
+}
+
+func (r *Runner) handleHistory(args []string) int {
+	ctx := context.Background()
+	records, err := r.agent.GetHistory(ctx, 20, 0)
+	if err != nil {
+		fmt.Printf("❌ Failed to get history: %v\n", err)
+		return 1
+	}
+
+	if len(records) == 0 {
+		fmt.Println("📜 No past generations found.")
+		return 0
+	}
+
+	fmt.Printf("📜 Past Generations History (%d items):\n\n", len(records))
+	for i, rec := range records {
+		fmt.Printf("%d. [%s] %s (%dx%d, seed %d) -> %s\n",
+			i+1, rec.CreatedAt.Format("2006-01-02 15:04"), rec.PromptRaw, rec.Width, rec.Height, rec.Seed, rec.ImagePath)
+	}
+	return 0
+}
