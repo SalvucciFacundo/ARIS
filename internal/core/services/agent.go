@@ -17,6 +17,7 @@ type AgentService struct {
 	kg       ports.KnowledgeGraphStore
 	history  ports.HistoryStore
 	critic   ports.VisionCritic
+	criticSvc *CriticService
 	learner  *AutoLearner
 }
 
@@ -32,13 +33,18 @@ func NewAgentService(
 	if kg != nil {
 		learner = NewAutoLearner(kg, llm)
 	}
+	var criticSvc *CriticService
+	if critic != nil {
+		criticSvc = NewCriticService(critic, 0.60, true)
+	}
 	return &AgentService{
-		llm:      llm,
-		registry: registry,
-		kg:       kg,
-		history:  history,
-		critic:   critic,
-		learner:  learner,
+		llm:       llm,
+		registry:  registry,
+		kg:        kg,
+		history:   history,
+		critic:    critic,
+		criticSvc: criticSvc,
+		learner:   learner,
 	}
 }
 
@@ -51,6 +57,8 @@ type GenerateOptions struct {
 	NegativePrompt string
 	InputImage     string
 	Project        string
+	EnableCritic   bool
+	AutoHeal       bool
 }
 
 // Generate runs the autonomous lifecycle: Recall -> Reason -> Synthesize -> Persist.
@@ -130,16 +138,12 @@ func (s *AgentService) Generate(ctx context.Context, input string, opts Generate
 		return spec, nil, fmt.Errorf("backend %s generation failed: %w", targetBackend.Name(), err)
 	}
 
-	// 4. (Optional) CRITIC & SELF-CORRECTION
-	if s.critic != nil {
-		score, critique, err := s.critic.Evaluate(ctx, result.LocalPath, spec)
-		if err == nil && score < 0.5 {
-			// Log critique and attempt a seed re-roll or refinement if needed
-			if result.Metadata == nil {
-				result.Metadata = make(map[string]any)
-			}
-			result.Metadata["critic_score"] = score
-			result.Metadata["critic_notes"] = critique
+	// 4. (Optional) VLM CRITIC & SELF-HEALING LOOP
+	if s.criticSvc != nil && (opts.EnableCritic || s.critic != nil) {
+		healedSpec, healedResult, err := s.criticSvc.InspectAndHeal(ctx, targetBackend, spec, result)
+		if err == nil {
+			spec = healedSpec
+			result = healedResult
 		}
 	}
 

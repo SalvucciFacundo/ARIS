@@ -30,6 +30,16 @@ type Config struct {
 		HFToken        string `yaml:"hf_token"`
 	} `yaml:"image"`
 
+	Critic struct {
+		Enabled   bool    `yaml:"enabled"`
+		Provider  string  `yaml:"provider"` // "ollama", "openai", "openrouter"
+		Model     string  `yaml:"model"`    // "qwen2.5-vl", "gpt-4o-mini"
+		BaseURL   string  `yaml:"base_url"`
+		APIKey    string  `yaml:"api_key"`
+		Threshold float64 `yaml:"threshold"`
+		AutoHeal  bool    `yaml:"auto_heal"`
+	} `yaml:"critic"`
+
 	Database struct {
 		Path string `yaml:"path"`
 	} `yaml:"database"`
@@ -49,6 +59,13 @@ func DefaultConfig() *Config {
 	cfg.Image.DefaultModel = "flux"
 	cfg.Image.DefaultRatio = "1:1"
 	cfg.Image.OutputDir = filepath.Join(arisDir, "outputs")
+
+	cfg.Critic.Enabled = false
+	cfg.Critic.Provider = "ollama"
+	cfg.Critic.Model = "qwen2.5-vl"
+	cfg.Critic.BaseURL = "http://127.0.0.1:11434/v1"
+	cfg.Critic.Threshold = 0.60
+	cfg.Critic.AutoHeal = true
 
 	cfg.Database.Path = filepath.Join(arisDir, "aris.db")
 	return cfg

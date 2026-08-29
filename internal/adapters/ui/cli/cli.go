@@ -4,6 +4,7 @@ import (
 	"context"
 	"flag"
 	"fmt"
+	"os"
 	"strings"
 	"time"
 
@@ -11,6 +12,7 @@ import (
 	"aris/internal/adapters/image"
 	"aris/internal/adapters/llm"
 	"aris/internal/adapters/ui/tui"
+	"aris/internal/adapters/vision"
 	"aris/internal/config"
 	"aris/internal/core/domain"
 	"aris/internal/core/ports"
@@ -62,7 +64,18 @@ func NewRunner() (*Runner, error) {
 		_ = reg.SetDefault(cfg.Image.DefaultBackend)
 	}
 
-	agent := services.NewAgentService(llmProvider, reg, kg, history, nil)
+	var visionCritic ports.VisionCritic
+	if cfg.Critic.Enabled || os.Getenv("ARIS_ENABLE_CRITIC") == "true" {
+		visionCritic = vision.NewVisionClient(
+			cfg.Critic.Provider,
+			cfg.Critic.APIKey,
+			cfg.Critic.BaseURL,
+			cfg.Critic.Model,
+			nil,
+		)
+	}
+
+	agent := services.NewAgentService(llmProvider, reg, kg, history, visionCritic)
 
 	return &Runner{
 		cfg:   cfg,
@@ -130,11 +143,13 @@ Options for 'gen':
   -r, --ratio         Aspect ratio: 1:1, 16:9, 9:16, 4:3, 3:4, 21:9 (default: 1:1)
   -s, --seed          Seed for reproducibility (default: random)
   -n, --negative      Negative prompt keywords
+  --critic            Run VLM visual critique on generated output
+  --auto-heal         Automatically retry if critique score is below threshold
 
 Examples:
   aris gen "a cyberpunk cat in neo tokyo" --ratio 16:9 --backend pollinations
-  aris gen "hyperrealistic portrait of an old sailor" --backend falai --model fal-ai/flux/dev
-  aris gen "anime landscape" --backend comfyui
+  aris gen "hyperrealistic portrait of an old sailor" --backend falai --critic --auto-heal
+  aris chat
   aris backends
   aris memory add --topic "style:cyberpunk" --concept "lighting" --fact "neon reflections, volumetric fog"
   aris history
@@ -192,6 +207,8 @@ func (r *Runner) handleGen(args []string) int {
 	_ = genFlags.String("n", "", "Shorthand for negative")
 	backendFlag := genFlags.String("backend", "pollinations", "Backend provider")
 	_ = genFlags.String("b", "pollinations", "Shorthand for backend")
+	criticFlag := genFlags.Bool("critic", false, "Enable VLM vision critique")
+	autoHealFlag := genFlags.Bool("auto-heal", false, "Enable automated self-healing re-roll")
 
 	// Parse flags while leaving raw prompt intact
 	var promptParts []string
@@ -224,9 +241,11 @@ func (r *Runner) handleGen(args []string) int {
 		Backend:        *backendFlag,
 		Seed:           *seedFlag,
 		NegativePrompt: *negFlag,
+		EnableCritic:   *criticFlag,
+		AutoHeal:       *autoHealFlag,
 	}
 
-	ctx, cancel := context.WithTimeout(context.Background(), 120*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), 180*time.Second)
 	defer cancel()
 
 	fmt.Printf("🎨 ARIS Reasoning over: %q\n", rawPrompt)
@@ -245,6 +264,17 @@ func (r *Runner) handleGen(args []string) int {
 	fmt.Printf("🧠 Prompt:     %s\n", spec.EnhancedPrompt)
 	if spec.NegativePrompt != "" {
 		fmt.Printf("🚫 Negative:   %s\n", spec.NegativePrompt)
+	}
+	if result.Metadata != nil {
+		if score, ok := result.Metadata["critic_score"]; ok {
+			fmt.Printf("👁️ VLM Score:  %.2f\n", score)
+		}
+		if notes, ok := result.Metadata["critic_notes"]; ok {
+			fmt.Printf("📝 VLM Notes:  %v\n", notes)
+		}
+		if healed, ok := result.Metadata["self_healed"]; ok && healed == true {
+			fmt.Println("🩹 Self-Healed: Automated prompt correction & re-roll applied!")
+		}
 	}
 	fmt.Printf("💾 Saved to:   %s\n", result.LocalPath)
 	return 0
