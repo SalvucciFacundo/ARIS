@@ -17,3 +17,4 @@ outputs/
 
 # Local Pi runtime state
 .atl/
+.codegraph/
