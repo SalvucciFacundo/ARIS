@@ -10,7 +10,7 @@ permissions:
 
 jobs:
   release:
-    name: Build & Release Multi-Platform Binaries
+    name: Build & Release Multi-Platform Binaries & Linux Packages (.deb, .rpm, .apk, .tar.gz)
     runs-on: ubuntu-latest
     steps:
       - name: Checkout repository
@@ -23,20 +23,23 @@ jobs:
         with:
           go-version: '1.23'
 
-      - name: Install zip & tools
+      - name: Install packaging tools
         run: sudo apt-get update && sudo apt-get install -y zip tar
 
-      - name: Install templ
-        run: go install github.com/a-h/templ/cmd/templ@v0.3.906
+      - name: Install templ & nfpm
+        run: |
+          go install github.com/a-h/templ/cmd/templ@v0.3.906
+          go install github.com/goreleaser/nfpm/v2/cmd/nfpm@latest
 
       - name: Generate Templ components
         run: templ generate
 
-      - name: Build Multi-Platform Matrix
+      - name: Build Multi-Platform Matrix & Packages
         env:
           VERSION: ${{ github.ref_name }}
         run: |
-          mkdir -p dist
+          mkdir -p dist/bin dist/packages
+          VERSION_CLEAN="${VERSION#v}"
 
           PLATFORMS=(
             "linux/amd64"
@@ -46,35 +49,53 @@ jobs:
             "windows/amd64"
           )
 
+          # 1. Compile all platform binaries
           for PLATFORM in "${PLATFORMS[@]}"; do
             GOOS=$(echo $PLATFORM | cut -d'/' -f1)
             GOARCH=$(echo $PLATFORM | cut -d'/' -f2)
 
-            echo "🚀 Building for $GOOS/$GOARCH ($VERSION)..."
+            echo "🚀 Compiling $GOOS/$GOARCH ($VERSION)..."
             BIN_EXT=""
             if [ "$GOOS" = "windows" ]; then
               BIN_EXT=".exe"
             fi
 
-            GOOS=$GOOS GOARCH=$GOARCH CGO_ENABLED=0 go build -ldflags="-s -w -X 'aris/internal/adapters/ui/cli.Version=$VERSION'" -o "dist/aris$BIN_EXT" ./cmd/aris
+            BIN_OUT="dist/bin/aris-${GOOS}-${GOARCH}${BIN_EXT}"
+            GOOS=$GOOS GOARCH=$GOARCH CGO_ENABLED=0 go build -ldflags="-s -w -X 'aris/internal/adapters/ui/cli.Version=$VERSION'" -o "$BIN_OUT" ./cmd/aris
 
+            # Create standard Tarball / Zip archives
             ARCHIVE_NAME="aris_${VERSION}_${GOOS}_${GOARCH}"
             if [ "$GOOS" = "windows" ]; then
-              (cd dist && zip "${ARCHIVE_NAME}.zip" "aris.exe" && rm "aris.exe")
+              cp "$BIN_OUT" dist/aris.exe
+              (cd dist && zip "packages/${ARCHIVE_NAME}.zip" "aris.exe" && rm "aris.exe")
             else
-              (cd dist && tar -czvf "${ARCHIVE_NAME}.tar.gz" "aris" && rm "aris")
+              cp "$BIN_OUT" dist/aris
+              (cd dist && tar -czvf "packages/${ARCHIVE_NAME}.tar.gz" "aris" && rm "aris")
             fi
           done
 
-          cd dist
+          # 2. Package Linux native formats (.deb, .rpm, .apk) using nfpm
+          for ARCH in amd64 arm64; do
+            echo "📦 Building .deb, .rpm, .apk for Linux $ARCH..."
+            VERSION="$VERSION_CLEAN" ARCH="$ARCH" nfpm pkg --packager deb --target dist/packages/
+            VERSION="$VERSION_CLEAN" ARCH="$ARCH" nfpm pkg --packager rpm --target dist/packages/
+            VERSION="$VERSION_CLEAN" ARCH="$ARCH" nfpm pkg --packager apk --target dist/packages/
+          done
+
+          # 3. Copy standalone binaries to root of release distribution
+          cp dist/bin/* dist/packages/
+
+          # 4. Generate SHA-256 Checksums
+          cd dist/packages
           sha256sum * > checksums.txt
-          echo "📦 Built artifacts ready for release:"
+
+          echo "🎉 All release artifacts generated successfully:"
           ls -lh
 
       - name: Publish GitHub Release
         uses: softprops/action-gh-release@v2
         with:
-          files: dist/*
+          files: dist/packages/*
           generate_release_notes: true
           draft: false
           prerelease: false

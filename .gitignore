@@ -1,6 +1,6 @@
 # Binaries
 bin/
-dist/
+/dist/
 /aris
 
 # Output images & cache

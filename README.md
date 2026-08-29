@@ -104,13 +104,31 @@ ARIS features built-in expert visual subagents that can be targeted via direct `
 curl -fsSL https://raw.githubusercontent.com/SalvucciFacundo/ARIS/main/install.sh | bash
 ```
 
+### 🐧 Linux Native Packages (Debian, Ubuntu, Fedora, Alpine)
+Download the native package for your distribution from [GitHub Releases](https://github.com/SalvucciFacundo/ARIS/releases):
+
+- **Debian / Ubuntu / Mint / Pop!_OS (`.deb`):**
+  ```bash
+  sudo dpkg -i aris_*_linux_amd64.deb
+  ```
+- **Fedora / RHEL / openSUSE (`.rpm`):**
+  ```bash
+  sudo rpm -i aris-*.x86_64.rpm
+  ```
+- **Alpine Linux (`.apk`):**
+  ```bash
+  apk add --allow-untrusted aris_*_linux_amd64.apk
+  ```
+- **Arch / Gentoo / Universal (`.tar.gz` or Standalone binary):**
+  Download `aris-linux-amd64`, `chmod +x aris-linux-amd64`, and move to `/usr/local/bin/aris`.
+
 ### 🐹 Install via Go (Go 1.23+)
 ```bash
 go install github.com/SalvucciFacundo/ARIS/cmd/aris@latest
 ```
 
-### 📦 Manual Binary Download
-Download the pre-compiled binary for your OS (Linux, macOS Apple Silicon/Intel, Windows) from the [GitHub Releases](https://github.com/SalvucciFacundo/ARIS/releases) page.
+### 🪟 Windows & 🍏 macOS Releases
+Pre-compiled standalone binaries (`.zip` for Windows, `.tar.gz` for macOS Apple Silicon & Intel) are available on [GitHub Releases](https://github.com/SalvucciFacundo/ARIS/releases).
 
 ### 🛠️ Build from Source
 ```bash
