@@ -69,23 +69,85 @@ const (
 	ScopeProject MemoryScope = "project" // Specific character sheet, campaign, or collection
 )
 
+// ReferenceMode defines the generation mode of the image pipeline.
+type ReferenceMode string
+
+const (
+	ModeText2Img      ReferenceMode = "text2img"
+	ModeImg2Img       ReferenceMode = "img2img"
+	ModeInpaint       ReferenceMode = "inpaint"
+	ModeStyleTransfer ReferenceMode = "style_transfer"
+	ModeUpscale       ReferenceMode = "upscale"
+)
+
 // ImageSpec defines the complete technical blueprint for an image generation.
 type ImageSpec struct {
-	ID             string         `json:"id"`
-	RawPrompt      string         `json:"raw_prompt"`
-	EnhancedPrompt string         `json:"enhanced_prompt"`
-	NegativePrompt string         `json:"negative_prompt"`
-	AspectRatio    AspectRatio    `json:"aspect_ratio"`
-	Width          int            `json:"width"`
-	Height         int            `json:"height"`
-	Steps          int            `json:"steps"`
-	CFGScale       float64        `json:"cfg_scale"`
-	Seed           int64          `json:"seed"`
-	Backend        string         `json:"backend"`
-	Model          string         `json:"model"`
-	InputImagePath string         `json:"input_image_path,omitempty"` // For img2img
-	ExtraParams    map[string]any `json:"extra_params,omitempty"`
-	CreatedAt      time.Time      `json:"created_at"`
+	ID              string         `json:"id"`
+	RawPrompt       string         `json:"raw_prompt"`
+	EnhancedPrompt  string         `json:"enhanced_prompt"`
+	NegativePrompt  string         `json:"negative_prompt"`
+	AspectRatio     AspectRatio    `json:"aspect_ratio"`
+	Width           int            `json:"width"`
+	Height          int            `json:"height"`
+	Steps           int            `json:"steps"`
+	CFGScale        float64        `json:"cfg_scale"`
+	Seed            int64          `json:"seed"`
+	Backend         string         `json:"backend"`
+	Model           string         `json:"model"`
+	Mode            ReferenceMode  `json:"mode,omitempty"`
+	InputImagePath  string         `json:"input_image_path,omitempty"`  // Base reference image (local path or URL)
+	MaskImagePath   string         `json:"mask_image_path,omitempty"`   // Inpainting mask image (local path or URL)
+	DenoiseStrength float64        `json:"denoise_strength,omitempty"` // [0.0, 1.0] divergence from source
+	ExtraParams     map[string]any `json:"extra_params,omitempty"`
+	CreatedAt       time.Time      `json:"created_at"`
+}
+
+// IsImg2Img returns true if the spec describes an image-to-image or style-transfer task.
+func (s *ImageSpec) IsImg2Img() bool {
+	if s.Mode == ModeImg2Img || s.Mode == ModeStyleTransfer {
+		return true
+	}
+	return s.InputImagePath != "" && s.MaskImagePath == "" && s.Mode != ModeInpaint
+}
+
+// IsInpaint returns true if the spec describes an inpainting task.
+func (s *ImageSpec) IsInpaint() bool {
+	if s.Mode == ModeInpaint {
+		return true
+	}
+	return s.MaskImagePath != ""
+}
+
+// ApplyDefaults applies default values for mode, denoise strength, and clamps parameters.
+func (s *ImageSpec) ApplyDefaults() {
+	if s.Mode == "" {
+		if s.MaskImagePath != "" {
+			s.Mode = ModeInpaint
+		} else if s.InputImagePath != "" {
+			s.Mode = ModeImg2Img
+		} else {
+			s.Mode = ModeText2Img
+		}
+	}
+
+	if s.Mode != ModeText2Img && s.DenoiseStrength == 0.0 {
+		s.DenoiseStrength = 0.70
+	}
+
+	// Clamp denoise strength to [0.0, 1.0]
+	if s.DenoiseStrength < 0.0 {
+		s.DenoiseStrength = 0.0
+	} else if s.DenoiseStrength > 1.0 {
+		s.DenoiseStrength = 1.0
+	}
+}
+
+// Validate checks internal consistency of the ImageSpec fields.
+func (s *ImageSpec) Validate() error {
+	if s.MaskImagePath != "" && s.InputImagePath == "" {
+		return fmt.Errorf("mask requires a base reference image")
+	}
+	return nil
 }
 
 // String returns a summary of the ImageSpec for logging/display.

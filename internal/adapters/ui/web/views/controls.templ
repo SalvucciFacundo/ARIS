@@ -1,0 +1,41 @@
+package views
+
+templ ControlsSection() {
+	<div class="controls-section">
+		<div class="flex justify-between items-center text-xs font-bold text-slate-400">
+			<span>Generation Parameters</span>
+		</div>
+
+		<!-- Aspect Ratio Buttons -->
+		<div class="form-group">
+			<label class="form-label">Aspect Ratio</label>
+			<div class="flex gap-1">
+				<button class="btn btn-secondary text-xs flex-1 ratio-btn btn-primary" data-ratio="1:1">1:1</button>
+				<button class="btn btn-secondary text-xs flex-1 ratio-btn" data-ratio="16:9">16:9</button>
+				<button class="btn btn-secondary text-xs flex-1 ratio-btn" data-ratio="9:16">9:16</button>
+				<button class="btn btn-secondary text-xs flex-1 ratio-btn" data-ratio="4:3">4:3</button>
+				<button class="btn btn-secondary text-xs flex-1 ratio-btn" data-ratio="21:9">21:9</button>
+			</div>
+		</div>
+
+		<!-- Backend and Model Selector -->
+		<div class="grid grid-cols-2 gap-2">
+			<div class="form-group">
+				<label for="backend-select" class="form-label">Backend</label>
+				<select id="backend-select" class="select-control text-xs">
+					<option value="pollinations">pollinations</option>
+					<option value="comfyui">comfyui</option>
+					<option value="falai">falai</option>
+				</select>
+			</div>
+			<div class="form-group">
+				<label for="model-select" class="form-label">Model</label>
+				<select id="model-select" class="select-control text-xs">
+					<option value="flux">flux</option>
+					<option value="flux-realism">flux-realism</option>
+					<option value="dall-e-3">dall-e-3</option>
+				</select>
+			</div>
+		</div>
+	</div>
+}

@@ -9,10 +9,12 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"strings"
 	"time"
 
 	"aris/internal/core/domain"
 	"aris/internal/core/ports"
+	"aris/pkg/imgutil"
 
 	"github.com/google/uuid"
 )
@@ -44,6 +46,19 @@ func NewFalAIBackend(apiKey string, outputDir string, httpClient *http.Client) *
 	}
 }
 
+// SetBaseURL allows overriding the base URL (useful for testing).
+func (f *FalAIBackend) SetBaseURL(url string) {
+	f.baseURL = strings.TrimRight(url, "/")
+}
+
+// GenerateWithBaseURL runs generation against a specified base URL (test helper).
+func (f *FalAIBackend) GenerateWithBaseURL(ctx context.Context, spec *domain.ImageSpec, baseURL string) (*domain.ImageResult, error) {
+	oldURL := f.baseURL
+	f.baseURL = strings.TrimRight(baseURL, "/")
+	defer func() { f.baseURL = oldURL }()
+	return f.Generate(ctx, spec)
+}
+
 func (f *FalAIBackend) Name() string {
 	return "falai"
 }
@@ -54,17 +69,22 @@ func (f *FalAIBackend) SupportsModels() []string {
 		"fal-ai/flux/dev",
 		"fal-ai/flux/schnell",
 		"fal-ai/flux-realism",
+		"fal-ai/flux/dev/image-to-image",
+		"fal-ai/flux-general/inpainting",
 	}
 }
 
 type falRequest struct {
-	Prompt         string `json:"prompt"`
-	NegativePrompt string `json:"negative_prompt,omitempty"`
-	ImageSize      string `json:"image_size,omitempty"`
-	NumInferenceSteps int `json:"num_inference_steps,omitempty"`
-	GuidanceScale  float64 `json:"guidance_scale,omitempty"`
-	Seed           int64  `json:"seed,omitempty"`
-	EnableSafetyChecker bool `json:"enable_safety_checker"`
+	Prompt              string  `json:"prompt"`
+	NegativePrompt      string  `json:"negative_prompt,omitempty"`
+	ImageSize           string  `json:"image_size,omitempty"`
+	NumInferenceSteps   int     `json:"num_inference_steps,omitempty"`
+	GuidanceScale       float64 `json:"guidance_scale,omitempty"`
+	Seed                int64   `json:"seed,omitempty"`
+	EnableSafetyChecker bool    `json:"enable_safety_checker"`
+	ImageURL            string  `json:"image_url,omitempty"`
+	MaskURL             string  `json:"mask_url,omitempty"`
+	Strength            float64 `json:"strength,omitempty"`
 }
 
 type falResponse struct {
@@ -85,11 +105,12 @@ func (f *FalAIBackend) Generate(ctx context.Context, spec *domain.ImageSpec) (*d
 		return nil, fmt.Errorf("FAL_KEY or fal.ai api key is not configured. Set FAL_KEY in environment or ~/.aris/config.yaml")
 	}
 
-	model := spec.Model
-	if model == "" || model == "flux" {
-		model = "fal-ai/flux/schnell"
+	spec.ApplyDefaults()
+	if err := spec.Validate(); err != nil {
+		return nil, fmt.Errorf("invalid spec: %w", err)
 	}
 
+	model := spec.Model
 	prompt := spec.EnhancedPrompt
 	if prompt == "" {
 		prompt = spec.RawPrompt
@@ -113,6 +134,43 @@ func (f *FalAIBackend) Generate(ctx context.Context, spec *domain.ImageSpec) (*d
 		GuidanceScale:       spec.CFGScale,
 		Seed:                spec.Seed,
 		EnableSafetyChecker: false,
+	}
+
+	if spec.IsInpaint() {
+		if model == "" || model == "flux" || model == "fal-ai/flux/schnell" {
+			model = "fal-ai/flux-general/inpainting"
+		}
+
+		// Prepare Base Image
+		baseURI, err := prepareImageURLOrDataURI(spec.InputImagePath)
+		if err != nil {
+			return nil, fmt.Errorf("prepare base image for inpainting: %w", err)
+		}
+		reqPayload.ImageURL = baseURI
+
+		// Prepare Mask Image
+		maskURI, err := prepareImageURLOrDataURI(spec.MaskImagePath)
+		if err != nil {
+			return nil, fmt.Errorf("prepare mask image for inpainting: %w", err)
+		}
+		reqPayload.MaskURL = maskURI
+		reqPayload.Strength = spec.DenoiseStrength
+
+	} else if spec.IsImg2Img() {
+		if model == "" || model == "flux" || model == "fal-ai/flux/schnell" {
+			model = "fal-ai/flux/dev/image-to-image"
+		}
+
+		baseURI, err := prepareImageURLOrDataURI(spec.InputImagePath)
+		if err != nil {
+			return nil, fmt.Errorf("prepare base image for img2img: %w", err)
+		}
+		reqPayload.ImageURL = baseURI
+		reqPayload.Strength = spec.DenoiseStrength
+	} else {
+		if model == "" || model == "flux" {
+			model = "fal-ai/flux/schnell"
+		}
 	}
 
 	bodyBytes, err := json.Marshal(reqPayload)
@@ -206,4 +264,19 @@ func (f *FalAIBackend) Generate(ctx context.Context, spec *domain.ImageSpec) (*d
 			"timings": falResp.Timings.Inference,
 		},
 	}, nil
+}
+
+func prepareImageURLOrDataURI(pathOrURL string) (string, error) {
+	trimmed := strings.TrimSpace(pathOrURL)
+	if trimmed == "" {
+		return "", fmt.Errorf("image path cannot be empty")
+	}
+	if strings.HasPrefix(trimmed, "http://") || strings.HasPrefix(trimmed, "https://") || strings.HasPrefix(trimmed, "data:") {
+		return trimmed, nil
+	}
+	data, mime, err := imgutil.LoadAndValidateImage(trimmed, imgutil.MaxImageSize)
+	if err != nil {
+		return "", err
+	}
+	return imgutil.ToBase64DataURI(mime, data), nil
 }

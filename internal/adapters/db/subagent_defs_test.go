@@ -24,13 +24,14 @@ func TestSubagentStore_BootstrapAndCRUD(t *testing.T) {
 	store := db.NewSubagentStore(sqlDB.DB())
 	ctx := context.Background()
 
-	// 1. Verify 5 default subagents were auto-bootstrapped
+	// 1. Verify default subagents were auto-bootstrapped
+	defaultCount := len(domain.DefaultSubagents())
 	list, err := store.ListSubagents(ctx)
 	if err != nil {
 		t.Fatalf("ListSubagents failed: %v", err)
 	}
-	if len(list) != 5 {
-		t.Fatalf("expected 5 default subagents, got %d", len(list))
+	if len(list) != defaultCount {
+		t.Fatalf("expected %d default subagents, got %d", defaultCount, len(list))
 	}
 
 	// 2. Fetch specific subagent
@@ -62,8 +63,8 @@ func TestSubagentStore_BootstrapAndCRUD(t *testing.T) {
 	if err != nil {
 		t.Fatalf("ListSubagents after add failed: %v", err)
 	}
-	if len(updatedList) != 6 {
-		t.Fatalf("expected 6 subagents after custom add, got %d", len(updatedList))
+	if len(updatedList) != defaultCount+1 {
+		t.Fatalf("expected %d subagents after custom add, got %d", defaultCount+1, len(updatedList))
 	}
 
 	// 4. Delete custom subagent
@@ -72,7 +73,7 @@ func TestSubagentStore_BootstrapAndCRUD(t *testing.T) {
 	}
 
 	finalList, _ := store.ListSubagents(ctx)
-	if len(finalList) != 5 {
-		t.Fatalf("expected 5 subagents after delete, got %d", len(finalList))
+	if len(finalList) != defaultCount {
+		t.Fatalf("expected %d subagents after delete, got %d", defaultCount, len(finalList))
 	}
 }

@@ -89,13 +89,16 @@ func (m *SubagentManager) ExecuteDirect(ctx context.Context, subagentName, input
 
 // PipelineOptions defines configuration overrides for a multi-agent pipeline run.
 type PipelineOptions struct {
-	AspectRatio    domain.AspectRatio
-	Model          string
-	Backend        string
-	Seed           int64
-	NegativePrompt string
-	InputImage     string
-	EnableCritic   bool
+	AspectRatio     domain.AspectRatio
+	Model           string
+	Backend         string
+	Seed            int64
+	NegativePrompt  string
+	InputImage      string
+	MaskImage       string
+	DenoiseStrength float64
+	Mode            domain.ReferenceMode
+	EnableCritic    bool
 }
 
 // PipelineResult encapsulates the outputs of all stages in a multi-agent sequence.
@@ -176,9 +179,19 @@ func (m *SubagentManager) PipelineExecute(ctx context.Context, prompt string, op
 			spec.NegativePrompt = opts.NegativePrompt
 		}
 	}
+	if opts.Mode != "" {
+		spec.Mode = opts.Mode
+	}
 	if opts.InputImage != "" {
 		spec.InputImagePath = opts.InputImage
 	}
+	if opts.MaskImage != "" {
+		spec.MaskImagePath = opts.MaskImage
+	}
+	if opts.DenoiseStrength > 0.0 {
+		spec.DenoiseStrength = opts.DenoiseStrength
+	}
+	spec.ApplyDefaults()
 
 	res.PromptSmithSpec = spec
 

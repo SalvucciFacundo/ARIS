@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"mime/multipart"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -14,6 +15,7 @@ import (
 
 	"aris/internal/core/domain"
 	"aris/internal/core/ports"
+	"aris/pkg/imgutil"
 
 	"github.com/google/uuid"
 )
@@ -54,8 +56,68 @@ func (c *ComfyUIBackend) SupportsModels() []string {
 	return []string{"local-flux", "local-sdxl", "custom-workflow"}
 }
 
-// buildComfyGraph generates a standard text2img workflow graph for ComfyUI.
-func (c *ComfyUIBackend) buildComfyGraph(spec *domain.ImageSpec, clientID string) map[string]any {
+// uploadImage uploads an image to ComfyUI /upload/image endpoint and returns the stored filename.
+func (c *ComfyUIBackend) uploadImage(ctx context.Context, imagePath string) (string, error) {
+	data, _, err := imgutil.LoadAndValidateImage(imagePath, imgutil.MaxImageSize)
+	if err != nil {
+		return "", fmt.Errorf("load image for ComfyUI upload: %w", err)
+	}
+
+	var body bytes.Buffer
+	writer := multipart.NewWriter(&body)
+
+	filename := filepath.Base(imagePath)
+	if filename == "" || filename == "." {
+		filename = "input_" + uuid.New().String()[:8] + ".png"
+	}
+
+	part, err := writer.CreateFormFile("image", filename)
+	if err != nil {
+		return "", fmt.Errorf("create multipart form file: %w", err)
+	}
+	if _, err := part.Write(data); err != nil {
+		return "", fmt.Errorf("write form file payload: %w", err)
+	}
+
+	_ = writer.WriteField("overwrite", "true")
+	if err := writer.Close(); err != nil {
+		return "", fmt.Errorf("close multipart writer: %w", err)
+	}
+
+	uploadURL := fmt.Sprintf("%s/upload/image", c.baseURL)
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, uploadURL, &body)
+	if err != nil {
+		return "", fmt.Errorf("create upload request: %w", err)
+	}
+	req.Header.Set("Content-Type", writer.FormDataContentType())
+
+	resp, err := c.httpClient.Do(req)
+	if err != nil {
+		return "", fmt.Errorf("comfyui image upload failed: %w", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		respBytes, _ := io.ReadAll(resp.Body)
+		return "", fmt.Errorf("upload returned status %d: %s", resp.StatusCode, string(respBytes))
+	}
+
+	var uploadResp struct {
+		Name string `json:"name"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&uploadResp); err != nil {
+		return "", fmt.Errorf("decode upload response: %w", err)
+	}
+
+	if uploadResp.Name == "" {
+		uploadResp.Name = filename
+	}
+
+	return uploadResp.Name, nil
+}
+
+// buildComfyGraph generates a workflow graph for ComfyUI (text2img, img2img, or inpaint).
+func (c *ComfyUIBackend) buildComfyGraph(ctx context.Context, spec *domain.ImageSpec, clientID string) (map[string]any, error) {
 	prompt := spec.EnhancedPrompt
 	if prompt == "" {
 		prompt = spec.RawPrompt
@@ -80,7 +142,168 @@ func (c *ComfyUIBackend) buildComfyGraph(spec *domain.ImageSpec, clientID string
 		cfg = 7.0
 	}
 
-	// Standard SDXL / Flux workflow graph
+	denoise := 1.0
+	if spec.DenoiseStrength > 0.0 {
+		denoise = spec.DenoiseStrength
+	}
+
+	if spec.IsInpaint() {
+		baseName, err := c.uploadImage(ctx, spec.InputImagePath)
+		if err != nil {
+			return nil, fmt.Errorf("upload inpaint base image: %w", err)
+		}
+		maskName, err := c.uploadImage(ctx, spec.MaskImagePath)
+		if err != nil {
+			return nil, fmt.Errorf("upload inpaint mask image: %w", err)
+		}
+
+		return map[string]any{
+			"10": map[string]any{
+				"class_type": "LoadImage",
+				"inputs": map[string]any{
+					"image": baseName,
+				},
+			},
+			"11": map[string]any{
+				"class_type": "LoadImage",
+				"inputs": map[string]any{
+					"image": maskName,
+				},
+			},
+			"12": map[string]any{
+				"class_type": "VAEEncodeForInpaint",
+				"inputs": map[string]any{
+					"grow_mask_by": 6,
+					"mask":         []any{"11", 0},
+					"pixels":       []any{"10", 0},
+					"vae":          []any{"4", 2},
+				},
+			},
+			"3": map[string]any{
+				"class_type": "KSampler",
+				"inputs": map[string]any{
+					"cfg":          cfg,
+					"denoise":      denoise,
+					"latent_image": []any{"12", 0},
+					"model":        []any{"4", 0},
+					"negative":     []any{"7", 0},
+					"positive":     []any{"6", 0},
+					"sampler_name": "euler",
+					"scheduler":    "normal",
+					"seed":         seed,
+					"steps":        steps,
+				},
+			},
+			"4": map[string]any{
+				"class_type": "CheckpointLoaderSimple",
+				"inputs": map[string]any{
+					"ckpt_name": "flux1-schnell.safetensors",
+				},
+			},
+			"6": map[string]any{
+				"class_type": "CLIPTextEncode",
+				"inputs": map[string]any{
+					"clip": []any{"4", 1},
+					"text": prompt,
+				},
+			},
+			"7": map[string]any{
+				"class_type": "CLIPTextEncode",
+				"inputs": map[string]any{
+					"clip": []any{"4", 1},
+					"text": spec.NegativePrompt,
+				},
+			},
+			"8": map[string]any{
+				"class_type": "VAEDecode",
+				"inputs": map[string]any{
+					"samples": []any{"3", 0},
+					"vae":     []any{"4", 2},
+				},
+			},
+			"9": map[string]any{
+				"class_type": "SaveImage",
+				"inputs": map[string]any{
+					"filename_prefix": "ARIS",
+					"images":          []any{"8", 0},
+				},
+			},
+		}, nil
+	}
+
+	if spec.IsImg2Img() {
+		baseName, err := c.uploadImage(ctx, spec.InputImagePath)
+		if err != nil {
+			return nil, fmt.Errorf("upload img2img base image: %w", err)
+		}
+
+		return map[string]any{
+			"10": map[string]any{
+				"class_type": "LoadImage",
+				"inputs": map[string]any{
+					"image": baseName,
+				},
+			},
+			"12": map[string]any{
+				"class_type": "VAEEncode",
+				"inputs": map[string]any{
+					"pixels": []any{"10", 0},
+					"vae":    []any{"4", 2},
+				},
+			},
+			"3": map[string]any{
+				"class_type": "KSampler",
+				"inputs": map[string]any{
+					"cfg":          cfg,
+					"denoise":      denoise,
+					"latent_image": []any{"12", 0},
+					"model":        []any{"4", 0},
+					"negative":     []any{"7", 0},
+					"positive":     []any{"6", 0},
+					"sampler_name": "euler",
+					"scheduler":    "normal",
+					"seed":         seed,
+					"steps":        steps,
+				},
+			},
+			"4": map[string]any{
+				"class_type": "CheckpointLoaderSimple",
+				"inputs": map[string]any{
+					"ckpt_name": "flux1-schnell.safetensors",
+				},
+			},
+			"6": map[string]any{
+				"class_type": "CLIPTextEncode",
+				"inputs": map[string]any{
+					"clip": []any{"4", 1},
+					"text": prompt,
+				},
+			},
+			"7": map[string]any{
+				"class_type": "CLIPTextEncode",
+				"inputs": map[string]any{
+					"clip": []any{"4", 1},
+					"text": spec.NegativePrompt,
+				},
+			},
+			"8": map[string]any{
+				"class_type": "VAEDecode",
+				"inputs": map[string]any{
+					"samples": []any{"3", 0},
+					"vae":     []any{"4", 2},
+				},
+			},
+			"9": map[string]any{
+				"class_type": "SaveImage",
+				"inputs": map[string]any{
+					"filename_prefix": "ARIS",
+					"images":          []any{"8", 0},
+				},
+			},
+		}, nil
+	}
+
+	// Standard text2img
 	return map[string]any{
 		"3": map[string]any{
 			"class_type": "KSampler",
@@ -139,7 +362,7 @@ func (c *ComfyUIBackend) buildComfyGraph(spec *domain.ImageSpec, clientID string
 				"images":          []any{"8", 0},
 			},
 		},
-	}
+	}, nil
 }
 
 type comfyPromptReq struct {
@@ -164,8 +387,16 @@ type comfyHistoryResp map[string]struct {
 }
 
 func (c *ComfyUIBackend) Generate(ctx context.Context, spec *domain.ImageSpec) (*domain.ImageResult, error) {
+	spec.ApplyDefaults()
+	if err := spec.Validate(); err != nil {
+		return nil, fmt.Errorf("invalid spec: %w", err)
+	}
+
 	clientID := uuid.New().String()
-	graph := c.buildComfyGraph(spec, clientID)
+	graph, err := c.buildComfyGraph(ctx, spec, clientID)
+	if err != nil {
+		return nil, fmt.Errorf("build comfyui graph: %w", err)
+	}
 
 	payload := comfyPromptReq{
 		Prompt:   graph,
@@ -212,7 +443,7 @@ func (c *ComfyUIBackend) Generate(ctx context.Context, spec *domain.ImageSpec) (
 		select {
 		case <-ctx.Done():
 			return nil, ctx.Err()
-		case <-time.After(500 * time.Millisecond):
+		case <-time.After(50 * time.Millisecond):
 		}
 
 		histURL := fmt.Sprintf("%s/history/%s", c.baseURL, promptID)

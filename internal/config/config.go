@@ -43,6 +43,33 @@ type Config struct {
 	Database struct {
 		Path string `yaml:"path"`
 	} `yaml:"database"`
+
+	Gateway GatewayConfig `yaml:"gateway"`
+}
+
+// GatewayConfig holds configuration for remote messaging adapters and concurrency.
+type GatewayConfig struct {
+	Concurrency int            `yaml:"concurrency"` // Max concurrent generations (default: 1)
+	MaxQueue    int            `yaml:"max_queue"`   // Max pending queue size (default: 10)
+	Telegram    TelegramConfig `yaml:"telegram"`
+	Discord     DiscordConfig  `yaml:"discord"`
+}
+
+// TelegramConfig holds credentials and allowlists for Telegram bot integration.
+type TelegramConfig struct {
+	Enabled        bool    `yaml:"enabled"`
+	BotToken       string  `yaml:"bot_token"`
+	AllowedChatIDs []int64 `yaml:"allowed_chat_ids"`
+	AllowedUserIDs []int64 `yaml:"allowed_user_ids"`
+	SendAsDocument bool    `yaml:"send_as_document"`
+}
+
+// DiscordConfig holds credentials and allowlists for Discord bot integration.
+type DiscordConfig struct {
+	Enabled           bool     `yaml:"enabled"`
+	BotToken          string   `yaml:"bot_token"`
+	AllowedChannelIDs []string `yaml:"allowed_channel_ids"`
+	AllowedUserIDs    []string `yaml:"allowed_user_ids"`
 }
 
 // DefaultConfig returns sane zero-config defaults.
@@ -68,6 +95,17 @@ func DefaultConfig() *Config {
 	cfg.Critic.AutoHeal = true
 
 	cfg.Database.Path = filepath.Join(arisDir, "aris.db")
+
+	cfg.Gateway.Concurrency = 1
+	cfg.Gateway.MaxQueue = 10
+	cfg.Gateway.Telegram.Enabled = false
+	cfg.Gateway.Telegram.SendAsDocument = false
+	cfg.Gateway.Telegram.AllowedChatIDs = []int64{}
+	cfg.Gateway.Telegram.AllowedUserIDs = []int64{}
+	cfg.Gateway.Discord.Enabled = false
+	cfg.Gateway.Discord.AllowedChannelIDs = []string{}
+	cfg.Gateway.Discord.AllowedUserIDs = []string{}
+
 	return cfg
 }
 
@@ -133,5 +171,81 @@ func LoadConfig() (*Config, error) {
 		cfg.Image.ComfyUIHost = h
 	}
 
+	// Gateway environment overrides
+	if c := os.Getenv("ARIS_GATEWAY_CONCURRENCY"); c != "" {
+		var val int
+		if _, err := fmt.Sscanf(c, "%d", &val); err == nil && val > 0 {
+			cfg.Gateway.Concurrency = val
+		}
+	}
+	if q := os.Getenv("ARIS_GATEWAY_MAX_QUEUE"); q != "" {
+		var val int
+		if _, err := fmt.Sscanf(q, "%d", &val); err == nil && val > 0 {
+			cfg.Gateway.MaxQueue = val
+		}
+	}
+	if t := os.Getenv("TELEGRAM_BOT_TOKEN"); t != "" {
+		cfg.Gateway.Telegram.BotToken = t
+		cfg.Gateway.Telegram.Enabled = true
+	} else if t := os.Getenv("ARIS_TELEGRAM_TOKEN"); t != "" {
+		cfg.Gateway.Telegram.BotToken = t
+		cfg.Gateway.Telegram.Enabled = true
+	}
+	if e := os.Getenv("ARIS_TELEGRAM_ENABLED"); e != "" {
+		cfg.Gateway.Telegram.Enabled = (e == "true" || e == "1")
+	}
+	if doc := os.Getenv("ARIS_TELEGRAM_SEND_DOCUMENT"); doc != "" {
+		cfg.Gateway.Telegram.SendAsDocument = (doc == "true" || doc == "1")
+	}
+	if chats := os.Getenv("TELEGRAM_ALLOWED_CHAT_IDS"); chats != "" {
+		cfg.Gateway.Telegram.AllowedChatIDs = parseInt64List(chats)
+	}
+	if users := os.Getenv("TELEGRAM_ALLOWED_USER_IDS"); users != "" {
+		cfg.Gateway.Telegram.AllowedUserIDs = parseInt64List(users)
+	}
+
+	if d := os.Getenv("DISCORD_BOT_TOKEN"); d != "" {
+		cfg.Gateway.Discord.BotToken = d
+		cfg.Gateway.Discord.Enabled = true
+	} else if d := os.Getenv("ARIS_DISCORD_TOKEN"); d != "" {
+		cfg.Gateway.Discord.BotToken = d
+		cfg.Gateway.Discord.Enabled = true
+	}
+	if e := os.Getenv("ARIS_DISCORD_ENABLED"); e != "" {
+		cfg.Gateway.Discord.Enabled = (e == "true" || e == "1")
+	}
+	if channels := os.Getenv("DISCORD_ALLOWED_CHANNEL_IDS"); channels != "" {
+		cfg.Gateway.Discord.AllowedChannelIDs = parseStringList(channels)
+	}
+	if users := os.Getenv("DISCORD_ALLOWED_USER_IDS"); users != "" {
+		cfg.Gateway.Discord.AllowedUserIDs = parseStringList(users)
+	}
+
 	return cfg, nil
+}
+
+func parseInt64List(s string) []int64 {
+	var result []int64
+	for _, part := range strings.Split(s, ",") {
+		part = strings.TrimSpace(part)
+		if part == "" {
+			continue
+		}
+		var val int64
+		if _, err := fmt.Sscanf(part, "%d", &val); err == nil {
+			result = append(result, val)
+		}
+	}
+	return result
+}
+
+func parseStringList(s string) []string {
+	var result []string
+	for _, part := range strings.Split(s, ",") {
+		part = strings.TrimSpace(part)
+		if part != "" {
+			result = append(result, part)
+		}
+	}
+	return result
 }

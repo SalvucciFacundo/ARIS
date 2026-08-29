@@ -1,0 +1,30 @@
+package views
+
+templ GalleryPanel() {
+	<section id="panel-gallery" class="panel">
+		<div class="panel-header">
+			<span>Visual Gallery</span>
+			<span class="text-xs text-slate-500">History</span>
+		</div>
+		<div class="panel-content">
+			<div id="gallery-grid" class="gallery-grid">
+				<!-- Thumbnails loaded dynamically via islands.js / SSE -->
+			</div>
+		</div>
+	</section>
+}
+
+templ LightboxModal() {
+	<div id="lightbox-modal" class="modal-overlay">
+		<div class="modal-content">
+			<img id="lightbox-img" src="" alt="Full resolution generation"/>
+			<div class="mt-4 flex flex-col items-center gap-2">
+				<p id="lightbox-prompt" class="text-xs text-slate-300 font-mono text-center max-w-xl"></p>
+				<div class="flex gap-2">
+					<button class="btn btn-primary" onclick="window.arisUseAsReference()">Use as Reference</button>
+					<button class="btn btn-secondary close-modal">Close</button>
+				</div>
+			</div>
+		</div>
+	</div>
+}

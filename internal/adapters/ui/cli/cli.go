@@ -5,10 +5,15 @@ import (
 	"flag"
 	"fmt"
 	"os"
+	"os/signal"
 	"strings"
+	"syscall"
 	"time"
 
 	"aris/internal/adapters/db"
+	"aris/internal/adapters/gateway"
+	"aris/internal/adapters/gateway/discord"
+	"aris/internal/adapters/gateway/telegram"
 	"aris/internal/adapters/image"
 	"aris/internal/adapters/llm"
 	"aris/internal/adapters/ui/tui"
@@ -104,8 +109,16 @@ func (r *Runner) Execute(args []string) int {
 	switch args[1] {
 	case "chat", "tui", "interactive":
 		return r.handleTUI()
+	case "gateway", "gw", "server":
+		return r.handleGateway(args[2:])
+	case "serve", "ui", "web":
+		return r.handleServe(args[2:])
+	case "gui", "desktop":
+		return r.handleGUI(args[2:])
 	case "gen", "generate":
 		return r.handleGen(args[2:])
+	case "edit":
+		return r.handleEdit(args[2:])
 	case "subagents", "subagent", "sub":
 		return r.handleSubagents(args[2:])
 	case "backends", "backend":
@@ -132,12 +145,17 @@ func (r *Runner) printHelp() {
 Usage:
   aris <command> [options]
   aris gen "<prompt>" [options]
+  aris edit <image_path> "<prompt>" [options]
   aris gen "@director <prompt>"
   aris subagents [list|show|run]
 
 Commands:
+  serve, ui           Launch ARIS Web Interface & REST/SSE Server
+  gui, desktop        Launch ARIS Desktop GUI (local window or remote VPS client)
+  gateway, gw         Launch remote messaging gateway (Telegram & Discord)
   chat, tui           Launch interactive Cyberpunk TUI (split-screen chat & controls)
   gen, generate       Synthesize image from natural language prompt (or route via @name)
+  edit                Transform or inpaint reference images (img2img / inpaint)
   subagents, sub      Inspect and run specialized visual subagents
   backends, backend   List and inspect available local & cloud image backends
   memory, mem         Manage 3-scope Knowledge Graph (list, add, search)
@@ -145,27 +163,84 @@ Commands:
   version             Show version info
   help                Show this help message
 
-Options for 'gen':
+Options for 'gen' and 'edit':
   -b, --backend       Image backend: pollinations, comfyui, falai, replicate, openai, huggingface
   -m, --model         Model name (e.g. flux, flux-realism, dall-e-3, sd-3.5)
   -r, --ratio         Aspect ratio: 1:1, 16:9, 9:16, 4:3, 3:4, 21:9 (default: 1:1)
-  -s, --seed          Seed for reproducibility (default: random)
+  -s, --strength      Denoise strength [0.0 - 1.0] for edit (default: 0.70)
+  --mask <path>       Mask image for inpainting (with 'edit')
   -n, --negative      Negative prompt keywords
   --critic            Run VLM visual critique on generated output
   --auto-heal         Automatically retry if critique score is below threshold
 
 Examples:
   aris gen "a cyberpunk cat in neo tokyo" --ratio 16:9 --backend pollinations
+  aris edit input.png "cyberpunk neon overhaul" --strength 0.65 --backend falai
+  aris edit portrait.png "remove glasses" --mask mask.png --backend comfyui
   aris gen "@director a neon cyberpunk alley in neo tokyo"
   aris gen "@promptsmith: hyperrealistic portrait of a space explorer"
   aris subagents list
-  aris subagents show director
-  aris subagents run critic "evaluate anatomical accuracy"
+  aris subagents show inpainter
+  aris subagents show restyler
   aris chat
   aris backends
   aris memory add --topic "style:cyberpunk" --concept "lighting" --fact "neon reflections, volumetric fog"
   aris history
 `, Version)
+}
+
+func (r *Runner) handleGateway(args []string) int {
+	var adapters []gateway.GatewayAdapter
+
+	queue := gateway.NewJobQueue(r.cfg.Gateway.Concurrency, r.cfg.Gateway.MaxQueue)
+	bridge := gateway.NewEngineBridge(r.agent, r.cfg, queue)
+
+	if r.cfg.Gateway.Telegram.Enabled && r.cfg.Gateway.Telegram.BotToken != "" {
+		tgAdapter := telegram.NewAdapter(r.cfg.Gateway.Telegram, bridge, queue)
+		adapters = append(adapters, tgAdapter)
+	}
+
+	if r.cfg.Gateway.Discord.Enabled && r.cfg.Gateway.Discord.BotToken != "" {
+		dcAdapter := discord.NewAdapter(r.cfg.Gateway.Discord, bridge, queue)
+		adapters = append(adapters, dcAdapter)
+	}
+
+	if len(adapters) == 0 {
+		fmt.Println("❌ Error: No gateway adapters are enabled.")
+		fmt.Println("Please set TELEGRAM_BOT_TOKEN or DISCORD_BOT_TOKEN (or configure ~/.aris/config.yaml).")
+		return 1
+	}
+
+	mux := gateway.NewMultiplexer(adapters, queue)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	fmt.Printf("🌐 Starting ARIS Gateway Multiplexer (Concurrency: %d, MaxQueue: %d)...\n",
+		r.cfg.Gateway.Concurrency, r.cfg.Gateway.MaxQueue)
+
+	if err := mux.Start(ctx); err != nil {
+		fmt.Printf("❌ Failed to start gateway multiplexer: %v\n", err)
+		return 1
+	}
+
+	// Trap termination signals
+	sigCh := make(chan os.Signal, 1)
+	signal.Notify(sigCh, os.Interrupt, syscall.SIGTERM)
+
+	sig := <-sigCh
+	fmt.Printf("\n🛑 Received signal (%v), initiating graceful shutdown...\n", sig)
+
+	shutdownCtx, shutdownCancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer shutdownCancel()
+
+	if err := mux.Stop(shutdownCtx); err != nil {
+		fmt.Printf("⚠️ Error during graceful shutdown: %v\n", err)
+		return 1
+	}
+
+	fmt.Println("✨ ARIS Gateway shutdown complete.")
+	return 0
 }
 
 func (r *Runner) handleBackends(args []string) int {

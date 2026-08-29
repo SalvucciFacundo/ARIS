@@ -1,0 +1,37 @@
+package views
+
+templ CanvasPanel() {
+	<section id="panel-canvas" class="panel canvas-panel">
+		<!-- Toolbar for inpainting brush controls -->
+		<div class="canvas-toolbar">
+			<div class="flex items-center gap-2">
+				<button id="btn-brush" class="btn btn-primary text-xs">Brush</button>
+				<button id="btn-eraser" class="btn btn-secondary text-xs">Eraser</button>
+				<button id="btn-clear-mask" class="btn btn-secondary text-xs">Clear Mask</button>
+			</div>
+			<div class="flex items-center gap-2 text-xs">
+				<label for="brush-size" class="text-slate-400">Size:</label>
+				<input id="brush-size" type="range" min="5" max="120" value="24" class="w-24"/>
+			</div>
+		</div>
+
+		<!-- Main Viewport -->
+		<div class="canvas-viewport">
+			<!-- Dropzone Overlay -->
+			<div id="canvas-dropzone" class="dropzone-overlay">
+				<svg class="w-10 h-10 text-cyan-400 mb-2" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+					<path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M7 16a4 4 0 01-.88-7.903A5 5 0 1115.9 6L16 6a5 5 0 011 9.9M15 13l-3-3m0 0l-3 3m3-3v12"></path>
+				</svg>
+				<div class="font-bold text-sm">Drop Reference Image Here</div>
+				<div class="text-xs text-slate-500">or click to browse from device</div>
+				<input id="canvas-file-input" type="file" accept="image/*" class="hidden" style="display: none;"/>
+			</div>
+
+			<!-- Canvas Container (Shown when image loaded) -->
+			<div id="canvas-container" class="canvas-container" style="display: none;">
+				<canvas id="image-canvas"></canvas>
+				<canvas id="mask-canvas"></canvas>
+			</div>
+		</div>
+	</section>
+}

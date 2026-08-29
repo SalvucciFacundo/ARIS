@@ -51,15 +51,18 @@ func NewAgentService(
 
 // GenerateOptions contains overrides for a single generation request.
 type GenerateOptions struct {
-	AspectRatio    domain.AspectRatio
-	Model          string
-	Backend        string
-	Seed           int64
-	NegativePrompt string
-	InputImage     string
-	Project        string
-	EnableCritic   bool
-	AutoHeal       bool
+	AspectRatio     domain.AspectRatio
+	Model           string
+	Backend         string
+	Seed            int64
+	NegativePrompt  string
+	InputImage      string
+	MaskImage       string
+	DenoiseStrength float64
+	Mode            domain.ReferenceMode
+	Project         string
+	EnableCritic    bool
+	AutoHeal        bool
 }
 
 // Generate runs the autonomous lifecycle: Recall -> Reason -> Synthesize -> Persist.
@@ -106,9 +109,19 @@ func (s *AgentService) Generate(ctx context.Context, input string, opts Generate
 			spec.NegativePrompt = opts.NegativePrompt
 		}
 	}
+	if opts.Mode != "" {
+		spec.Mode = opts.Mode
+	}
 	if opts.InputImage != "" {
 		spec.InputImagePath = opts.InputImage
 	}
+	if opts.MaskImage != "" {
+		spec.MaskImagePath = opts.MaskImage
+	}
+	if opts.DenoiseStrength > 0.0 {
+		spec.DenoiseStrength = opts.DenoiseStrength
+	}
+	spec.ApplyDefaults()
 
 	// 3. DISPATCH & RENDER: Resolve Image Backend from Registry
 	var targetBackend ports.ImageBackend

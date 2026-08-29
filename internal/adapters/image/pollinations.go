@@ -115,12 +115,24 @@ func (p *PollinationsBackend) BuildURL(spec *domain.ImageSpec) string {
 	if spec.NegativePrompt != "" {
 		q.Set("negative", spec.NegativePrompt)
 	}
+	if spec.InputImagePath != "" && (strings.HasPrefix(spec.InputImagePath, "http://") || strings.HasPrefix(spec.InputImagePath, "https://")) {
+		q.Set("image", spec.InputImagePath)
+	}
 
 	return fmt.Sprintf("%s?%s", fullURL, q.Encode())
 }
 
 // Generate fetches the rendered image from Pollinations and writes it to disk.
 func (p *PollinationsBackend) Generate(ctx context.Context, spec *domain.ImageSpec) (*domain.ImageResult, error) {
+	spec.ApplyDefaults()
+	if err := spec.Validate(); err != nil {
+		return nil, fmt.Errorf("invalid spec: %w", err)
+	}
+
+	if spec.IsInpaint() {
+		return nil, fmt.Errorf("backend 'pollinations' does not support masked inpainting; please use falai, comfyui, or openai")
+	}
+
 	start := time.Now()
 	targetURL := p.BuildURL(spec)
 

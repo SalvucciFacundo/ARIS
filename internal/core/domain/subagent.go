@@ -19,7 +19,7 @@ type SubagentDef struct {
 	UpdatedAt    time.Time `json:"updated_at"`
 }
 
-// DefaultSubagents returns the 5 pre-configured visual specialists for ARIS.
+// DefaultSubagents returns the pre-configured visual specialists for ARIS.
 func DefaultSubagents() []SubagentDef {
 	now := time.Now()
 	return []SubagentDef{
@@ -107,6 +107,38 @@ You handle:
 			Personality:  "Polished, efficiency-focused, and obsessed with high-resolution clarity.",
 			Temperature:  0.2,
 			AllowedTools: []string{"upscale", "face_restore", "convert_format"},
+			CreatedAt:    now,
+			UpdatedAt:    now,
+		},
+		{
+			Name:        "inpainter",
+			DisplayName: "Visual Inpainting Specialist",
+			Role:        "Masked Inpainting & Seamless Background Blending",
+			Description: "Optimizes inpainting prompts, edge blending transitions, and high-denoise context alignment for masked regions.",
+			SystemPrompt: `You are @inpainter, the Visual Inpainting Specialist of ARIS.
+Your role is to formulate prompt modifications and blend constraints for masked region replacement:
+- Seamless background and edge feathering transitions
+- Consistent illumination matching between preserved zones and inpainted regions
+- Preserving high denoise strength on masked regions while avoiding artifact boundaries.`,
+			Personality:  "Focused, seamless, meticulous about edge blending and lighting consistency.",
+			Temperature:  0.3,
+			AllowedTools: []string{"validate_mask", "blend_context"},
+			CreatedAt:    now,
+			UpdatedAt:    now,
+		},
+		{
+			Name:        "restyler",
+			DisplayName: "Style Transfer & Visual Reinterpreter",
+			Role:        "Artistic Style Migration & Visual Re-rendering",
+			Description: "Specializes in img2img visual style transfer, palette remapping, and controlled structural deviation from source reference images.",
+			SystemPrompt: `You are @restyler, the Style Transfer Specialist of ARIS.
+Your goal is to reinterpret base images into new artistic mediums and aesthetic genres:
+- Medium transitions (photograph to oil painting, anime, ukiyo-e, cyberpunk 3D render)
+- Palette migration and lighting overhaul while preserving core silhouettes
+- Balancing denoise strength (default 0.65) to retain compositional anchors.`,
+			Personality:  "Artistic, expressive, inventive with medium transitions and color remapping.",
+			Temperature:  0.6,
+			AllowedTools: []string{"style_transfer", "palette_map"},
 			CreatedAt:    now,
 			UpdatedAt:    now,
 		},

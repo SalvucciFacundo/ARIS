@@ -111,3 +111,94 @@ func TestAgentService_GenerateWorkflow(t *testing.T) {
 		t.Error("expected director concept in pipeline result")
 	}
 }
+
+func TestAgentService_GenerateImg2ImgAndInpaintOptions(t *testing.T) {
+	tmpDir := t.TempDir()
+	dbPath := filepath.Join(tmpDir, "test.db")
+	sqlDB, _ := db.NewSQLiteDB(dbPath)
+	defer sqlDB.Close()
+
+	llmProvider := llm.NewPassthroughProvider()
+	reg := image.NewRegistry()
+	mockBackend := &MockBackend{
+		name: "mock-backend",
+		generateFunc: func(ctx context.Context, spec *domain.ImageSpec) (*domain.ImageResult, error) {
+			return &domain.ImageResult{
+				ID:        "res-1",
+				SpecID:    spec.ID,
+				LocalPath: "/tmp/out.png",
+			}, nil
+		},
+	}
+	_ = reg.Register(mockBackend)
+	_ = reg.SetDefault("mock-backend")
+
+	agent := services.NewAgentService(llmProvider, reg, nil, nil, nil)
+	ctx := context.Background()
+
+	// Img2Img generation with reference image and strength
+	optsI2I := services.GenerateOptions{
+		InputImage:      "/tmp/base.png",
+		DenoiseStrength: 0.65,
+		Mode:            domain.ModeImg2Img,
+	}
+	specI2I, _, err := agent.Generate(ctx, "turn to cyberpunk", optsI2I)
+	if err != nil {
+		t.Fatalf("Generate img2img failed: %v", err)
+	}
+	if specI2I.InputImagePath != "/tmp/base.png" {
+		t.Errorf("expected input image path to propagate, got %s", specI2I.InputImagePath)
+	}
+	if specI2I.DenoiseStrength != 0.65 {
+		t.Errorf("expected denoise strength 0.65, got %f", specI2I.DenoiseStrength)
+	}
+	if specI2I.Mode != domain.ModeImg2Img {
+		t.Errorf("expected ModeImg2Img, got %s", specI2I.Mode)
+	}
+
+	// Inpaint generation with mask
+	optsInpaint := services.GenerateOptions{
+		InputImage:      "/tmp/base.png",
+		MaskImage:       "/tmp/mask.png",
+		DenoiseStrength: 0.85,
+		Mode:            domain.ModeInpaint,
+	}
+	specInp, _, err := agent.Generate(ctx, "remove glasses", optsInpaint)
+	if err != nil {
+		t.Fatalf("Generate inpaint failed: %v", err)
+	}
+	if specInp.MaskImagePath != "/tmp/mask.png" {
+		t.Errorf("expected mask image path to propagate, got %s", specInp.MaskImagePath)
+	}
+	if specInp.DenoiseStrength != 0.85 {
+		t.Errorf("expected denoise 0.85, got %f", specInp.DenoiseStrength)
+	}
+	if specInp.Mode != domain.ModeInpaint {
+		t.Errorf("expected ModeInpaint, got %s", specInp.Mode)
+	}
+}
+
+func TestSubagentManager_VisualSubagents(t *testing.T) {
+	ctx := context.Background()
+	store := NewMockSubagentStore()
+	llmProvider := &MockLLMProvider{}
+	mgr := services.NewSubagentManager(store, llmProvider, nil, nil, nil)
+
+	// Verify @inpainter preset exists
+	inpainter, err := mgr.GetSubagent(ctx, "inpainter")
+	if err != nil {
+		t.Fatalf("expected @inpainter subagent to exist: %v", err)
+	}
+	if inpainter.Name != "inpainter" {
+		t.Errorf("expected name inpainter, got %s", inpainter.Name)
+	}
+
+	// Verify @restyler preset exists
+	restyler, err := mgr.GetSubagent(ctx, "restyler")
+	if err != nil {
+		t.Fatalf("expected @restyler subagent to exist: %v", err)
+	}
+	if restyler.Name != "restyler" {
+		t.Errorf("expected name restyler, got %s", restyler.Name)
+	}
+}

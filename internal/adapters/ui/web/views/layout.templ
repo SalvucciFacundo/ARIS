@@ -1,0 +1,46 @@
+package views
+
+templ Layout(title string) {
+	<!DOCTYPE html>
+	<html lang="en">
+		<head>
+			<meta charset="UTF-8"/>
+			<meta name="viewport" content="width=device-width, initial-scale=1.0"/>
+			<title>{ title }</title>
+			<link rel="stylesheet" href="/assets/app.css"/>
+			<script src="/assets/htmx.min.js"></script>
+		</head>
+		<body class="bg-slate-950 text-slate-100">
+			<!-- Header -->
+			<header class="app-header">
+				<div class="brand-logo">
+					<span>✨ ARIS</span>
+					<span class="badge-status">v1.0.0</span>
+				</div>
+				<div class="flex items-center gap-4 text-xs">
+					<span id="status-text" class="text-slate-400">Ready</span>
+					<div class="w-32 bg-slate-800 rounded-full h-1.5 overflow-hidden">
+						<div id="progress-bar-fill" class="bg-cyan-400 h-1.5 rounded-full transition-all duration-300" style="width: 0%"></div>
+					</div>
+				</div>
+			</header>
+
+			<!-- 3-Panel Grid Container -->
+			<main class="app-container">
+				<!-- Left Panel: Gallery -->
+				@GalleryPanel()
+
+				<!-- Center Panel: Canvas & Inpainting Island -->
+				@CanvasPanel()
+
+				<!-- Right Panel: Chat & Controls -->
+				@ChatPanel()
+			</main>
+
+			<!-- Lightbox Modal -->
+			@LightboxModal()
+
+			<script src="/assets/islands.js"></script>
+		</body>
+	</html>
+}

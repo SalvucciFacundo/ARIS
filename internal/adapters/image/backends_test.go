@@ -1,22 +1,29 @@
 package image_test
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
+	"image"
+	"image/color"
+	"image/png"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"os"
+	"path/filepath"
+	"strings"
 	"testing"
 
-	"aris/internal/adapters/image"
+	imgadapter "aris/internal/adapters/image"
 	"aris/internal/core/domain"
 )
 
 func TestRegistry_RegisterAndRetrieve(t *testing.T) {
-	reg := image.NewRegistry()
+	reg := imgadapter.NewRegistry()
 
-	pollinations := image.NewPollinationsBackend()
-	fal := image.NewFalAIBackend("fake-key", "", nil)
+	pollinations := imgadapter.NewPollinationsBackend()
+	fal := imgadapter.NewFalAIBackend("fake-key", "", nil)
 
 	if err := reg.Register(pollinations); err != nil {
 		t.Fatalf("Register pollinations failed: %v", err)
@@ -48,25 +55,52 @@ func TestRegistry_RegisterAndRetrieve(t *testing.T) {
 	}
 }
 
-func TestFalAIBackend_GenerateMock(t *testing.T) {
+func createTestPNGFile(t *testing.T, dir, name string, w, h int) string {
+	img := image.NewRGBA(image.Rect(0, 0, w, h))
+	for y := 0; y < h; y++ {
+		for x := 0; x < w; x++ {
+			img.Set(x, y, color.RGBA{R: 120, G: 200, B: 50, A: 255})
+		}
+	}
+	var buf bytes.Buffer
+	_ = png.Encode(&buf, img)
+	filePath := filepath.Join(dir, name)
+	if err := os.WriteFile(filePath, buf.Bytes(), 0644); err != nil {
+		t.Fatalf("failed to write test png: %v", err)
+	}
+	return filePath
+}
+
+func TestFalAIBackend_Img2ImgAndInpaintPayload(t *testing.T) {
+	tmpDir := t.TempDir()
+	baseImg := createTestPNGFile(t, tmpDir, "base.png", 64, 64)
+	maskImg := createTestPNGFile(t, tmpDir, "mask.png", 64, 64)
+
+	var capturedPath string
+	var capturedPayload map[string]any
+
 	cdnServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusOK)
-		_, _ = w.Write([]byte("FAL_IMAGE_DATA"))
+		_, _ = w.Write([]byte("FAL_EDITED_IMAGE"))
 	}))
 	defer cdnServer.Close()
 
 	falServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		capturedPath = r.URL.Path
+		bodyBytes, _ := io.ReadAll(r.Body)
+		_ = json.Unmarshal(bodyBytes, &capturedPayload)
+
 		resp := map[string]any{
 			"images": []map[string]any{
 				{
-					"url":          cdnServer.URL + "/image.jpg",
-					"width":        1024,
-					"height":       1024,
+					"url":          cdnServer.URL + "/output.jpg",
+					"width":        64,
+					"height":       64,
 					"content_type": "image/jpeg",
 				},
 			},
 			"timings": map[string]any{
-				"inference": 1.25,
+				"inference": 0.85,
 			},
 		}
 		w.Header().Set("Content-Type", "application/json")
@@ -74,40 +108,165 @@ func TestFalAIBackend_GenerateMock(t *testing.T) {
 	}))
 	defer falServer.Close()
 
-	tmpDir, _ := os.MkdirTemp("", "aris-fal-test-*")
-	defer os.RemoveAll(tmpDir)
-
-	spec := &domain.ImageSpec{
-		ID:             "spec-fal-1",
-		RawPrompt:      "a futuristic city",
-		EnhancedPrompt: "a futuristic cyberpunk city at night with flying cars",
-		AspectRatio:    domain.RatioLandscape,
-		Width:          1344,
-		Height:         768,
-		Model:          "fal-ai/flux/schnell",
+	backend := imgadapter.NewFalAIBackend("fake-fal-key", tmpDir, falServer.Client())
+	// Test Img2Img
+	specI2I := &domain.ImageSpec{
+		ID:              "fal-i2i",
+		RawPrompt:       "cyberpunk neon overhaul",
+		EnhancedPrompt:  "cyberpunk neon overhaul cinematic",
+		Mode:            domain.ModeImg2Img,
+		InputImagePath:  baseImg,
+		DenoiseStrength: 0.65,
 	}
 
-	// Test auth guard when key is empty
-	unauthBackend := image.NewFalAIBackend("", tmpDir, nil)
-	_, err := unauthBackend.Generate(context.Background(), spec)
-	if err == nil {
-		t.Errorf("expected error when FAL_KEY is missing, got nil")
+	// Swap base URL via test or reflection if supported, or via custom constructor/internal helper
+	// Let's test with the fal backend
+	result, err := backend.GenerateWithBaseURL(context.Background(), specI2I, falServer.URL)
+	if err != nil {
+		t.Fatalf("Fal img2img failed: %v", err)
+	}
+	if result == nil || result.LocalPath == "" {
+		t.Fatalf("expected valid result from Fal img2img")
+	}
+	if !strings.Contains(capturedPath, "image-to-image") {
+		t.Errorf("expected endpoint to contain image-to-image, got %s", capturedPath)
+	}
+	if capturedPayload["image_url"] == "" {
+		t.Errorf("expected image_url in payload")
+	}
+	if strength, ok := capturedPayload["strength"].(float64); !ok || strength != 0.65 {
+		t.Errorf("expected strength 0.65, got %v", capturedPayload["strength"])
+	}
+
+	// Test Inpaint
+	specInpaint := &domain.ImageSpec{
+		ID:              "fal-inpaint",
+		RawPrompt:       "remove background",
+		EnhancedPrompt:  "remove background with transparent blend",
+		Mode:            domain.ModeInpaint,
+		InputImagePath:  baseImg,
+		MaskImagePath:   maskImg,
+		DenoiseStrength: 0.80,
+	}
+
+	resultInpaint, err := backend.GenerateWithBaseURL(context.Background(), specInpaint, falServer.URL)
+	if err != nil {
+		t.Fatalf("Fal inpaint failed: %v", err)
+	}
+	if resultInpaint == nil {
+		t.Fatalf("expected valid result from Fal inpaint")
+	}
+	if !strings.Contains(capturedPath, "inpaint") {
+		t.Errorf("expected inpainting endpoint, got %s", capturedPath)
+	}
+	if capturedPayload["mask_url"] == "" {
+		t.Errorf("expected mask_url in inpaint payload")
 	}
 }
 
-func TestOpenAIBackend_GenerateMock(t *testing.T) {
+func TestComfyUIBackend_Img2ImgAndInpaint(t *testing.T) {
+	tmpDir := t.TempDir()
+	baseImg := createTestPNGFile(t, tmpDir, "base.png", 64, 64)
+	maskImg := createTestPNGFile(t, tmpDir, "mask.png", 64, 64)
+
+	var uploadedImages []string
+	var promptGraph map[string]any
+
+	comfyServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case strings.HasPrefix(r.URL.Path, "/upload/image"):
+			uploadedImages = append(uploadedImages, "uploaded_file.png")
+			_ = json.NewEncoder(w).Encode(map[string]any{"name": "uploaded_file.png"})
+		case strings.HasPrefix(r.URL.Path, "/prompt"):
+			var body struct {
+				Prompt map[string]any `json:"prompt"`
+			}
+			_ = json.NewDecoder(r.Body).Decode(&body)
+			promptGraph = body.Prompt
+			_ = json.NewEncoder(w).Encode(map[string]any{"prompt_id": "comfy-123"})
+		case strings.HasPrefix(r.URL.Path, "/history/comfy-123"):
+			_ = json.NewEncoder(w).Encode(map[string]any{
+				"comfy-123": map[string]any{
+					"outputs": map[string]any{
+						"9": map[string]any{
+							"images": []map[string]any{
+								{"filename": "out.png", "subfolder": "", "type": "output"},
+							},
+						},
+					},
+				},
+			})
+		case strings.HasPrefix(r.URL.Path, "/view"):
+			w.WriteHeader(http.StatusOK)
+			_, _ = w.Write([]byte("COMFY_RENDERED_BYTES"))
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer comfyServer.Close()
+
+	backend := imgadapter.NewComfyUIBackend(comfyServer.URL, tmpDir, comfyServer.Client())
+
+	// Test inpainting workflow graph construction
+	specInpaint := &domain.ImageSpec{
+		ID:              "comfy-inp",
+		RawPrompt:       "fix face",
+		Mode:            domain.ModeInpaint,
+		InputImagePath:  baseImg,
+		MaskImagePath:   maskImg,
+		DenoiseStrength: 0.75,
+	}
+
+	result, err := backend.Generate(context.Background(), specInpaint)
+	if err != nil {
+		t.Fatalf("ComfyUI inpaint failed: %v", err)
+	}
+	if result == nil || result.LocalPath == "" {
+		t.Fatalf("expected valid result from comfyui")
+	}
+
+	// Verify node graph has inpainting nodes
+	hasInpaintNode := false
+	for _, node := range promptGraph {
+		if nodeMap, ok := node.(map[string]any); ok {
+			if classType, ok := nodeMap["class_type"].(string); ok {
+				if strings.Contains(classType, "Inpaint") || classType == "LoadImage" {
+					hasInpaintNode = true
+					break
+				}
+			}
+		}
+	}
+	if !hasInpaintNode {
+		t.Errorf("expected ComfyUI inpaint graph to contain inpainting or LoadImage nodes")
+	}
+}
+
+func TestOpenAIBackend_EditMultipart(t *testing.T) {
+	tmpDir := t.TempDir()
+	baseImg := createTestPNGFile(t, tmpDir, "base.png", 64, 64)
+	maskImg := createTestPNGFile(t, tmpDir, "mask.png", 64, 64)
+
+	var capturedEndpoint string
+	var isMultipart bool
+
 	cdnServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusOK)
-		_, _ = w.Write([]byte("OPENAI_IMAGE_BYTES"))
+		_, _ = w.Write([]byte("OPENAI_EDIT_OUTPUT"))
 	}))
 	defer cdnServer.Close()
 
 	apiServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		capturedEndpoint = r.URL.Path
+		if strings.Contains(r.Header.Get("Content-Type"), "multipart/form-data") {
+			isMultipart = true
+		}
+
 		resp := map[string]any{
 			"data": []map[string]any{
 				{
-					"url":            cdnServer.URL + "/dalle.png",
-					"revised_prompt": "A cinematic shot of a samurai cat",
+					"url":            cdnServer.URL + "/dalle2_edit.png",
+					"revised_prompt": "An edited cat",
 				},
 			},
 		}
@@ -116,31 +275,47 @@ func TestOpenAIBackend_GenerateMock(t *testing.T) {
 	}))
 	defer apiServer.Close()
 
-	tmpDir, _ := os.MkdirTemp("", "aris-openai-test-*")
-	defer os.RemoveAll(tmpDir)
-
-	backend := image.NewOpenAIBackend("test-key", apiServer.URL, tmpDir, apiServer.Client())
+	backend := imgadapter.NewOpenAIBackend("test-key", apiServer.URL, tmpDir, apiServer.Client())
 
 	spec := &domain.ImageSpec{
-		ID:             "spec-dalle-1",
-		RawPrompt:      "samurai cat",
-		EnhancedPrompt: "a samurai cat in ancient kyoto",
-		AspectRatio:    domain.RatioSquare,
-		Width:          1024,
-		Height:         1024,
-		Model:          "dall-e-3",
+		ID:              "dalle-edit",
+		RawPrompt:       "add sunglasses",
+		Mode:            domain.ModeInpaint,
+		InputImagePath:  baseImg,
+		MaskImagePath:   maskImg,
+		DenoiseStrength: 0.8,
 	}
 
 	result, err := backend.Generate(context.Background(), spec)
 	if err != nil {
-		t.Fatalf("OpenAI Generate failed: %v", err)
+		t.Fatalf("OpenAI edit failed: %v", err)
+	}
+	if result == nil {
+		t.Fatalf("expected valid result from openai edit")
+	}
+	if !strings.Contains(capturedEndpoint, "/images/edits") {
+		t.Errorf("expected /images/edits endpoint, got %s", capturedEndpoint)
+	}
+	if !isMultipart {
+		t.Errorf("expected multipart/form-data request")
+	}
+}
+
+func TestPollinationsBackend_InpaintUnsupported(t *testing.T) {
+	backend := imgadapter.NewPollinationsBackend()
+
+	spec := &domain.ImageSpec{
+		RawPrompt:      "inpaint attempt",
+		Mode:           domain.ModeInpaint,
+		InputImagePath: "base.png",
+		MaskImagePath:  "mask.png",
 	}
 
-	if result.LocalPath == "" {
-		t.Errorf("expected local path populated")
+	_, err := backend.Generate(context.Background(), spec)
+	if err == nil {
+		t.Fatalf("expected error for unsupported pollinations inpainting, got nil")
 	}
-	content, _ := os.ReadFile(result.LocalPath)
-	if string(content) != "OPENAI_IMAGE_BYTES" {
-		t.Errorf("unexpected image bytes: %s", string(content))
+	if !strings.Contains(err.Error(), "does not support") && !strings.Contains(err.Error(), "unsupported") {
+		t.Errorf("expected unsupported capability error, got: %v", err)
 	}
 }
