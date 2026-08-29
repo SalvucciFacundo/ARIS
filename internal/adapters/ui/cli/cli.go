@@ -119,6 +119,8 @@ func (r *Runner) Execute(args []string) int {
 		return r.handleGen(args[2:])
 	case "edit":
 		return r.handleEdit(args[2:])
+	case "batch":
+		return r.handleBatch(args[2:])
 	case "subagents", "subagent", "sub":
 		return r.handleSubagents(args[2:])
 	case "backends", "backend":
@@ -145,6 +147,7 @@ func (r *Runner) printHelp() {
 Usage:
   aris <command> [options]
   aris gen "<prompt>" [options]
+  aris batch "<prompt>" [options]
   aris edit <image_path> "<prompt>" [options]
   aris gen "@director <prompt>"
   aris subagents [list|show|run]
@@ -155,6 +158,7 @@ Commands:
   gateway, gw         Launch remote messaging gateway (Telegram & Discord)
   chat, tui           Launch interactive Cyberpunk TUI (split-screen chat & controls)
   gen, generate       Synthesize image from natural language prompt (or route via @name)
+  batch               Batch generation, prompt matrix expansion & A/B benchmarking
   edit                Transform or inpaint reference images (img2img / inpaint)
   subagents, sub      Inspect and run specialized visual subagents
   backends, backend   List and inspect available local & cloud image backends
