@@ -1,0 +1,36 @@
+name: CI
+
+on:
+  push:
+    branches: [ main ]
+  pull_request:
+    branches: [ main ]
+
+jobs:
+  test:
+    name: Test & Lint
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Setup Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: '1.23'
+          cache: true
+
+      - name: Install templ
+        run: go install github.com/a-h/templ/cmd/templ@v0.3.906
+
+      - name: Generate Templ components
+        run: templ generate
+
+      - name: Verify static analysis (go vet)
+        run: go vet ./...
+
+      - name: Run test suite with race detector
+        run: go test -v -race -count=1 ./...
+
+      - name: Verify binary compilation
+        run: go build -v -o aris ./cmd/aris

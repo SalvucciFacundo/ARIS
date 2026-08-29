@@ -97,16 +97,25 @@ ARIS features built-in expert visual subagents that can be targeted via direct `
 
 ---
 
-## 🚀 Quick Start & CLI Usage
+## 🚀 Installation & Quick Start
 
-### Installation
-
+### ⚡ One-Line Install (Linux & macOS)
 ```bash
-# Clone the repository
+curl -fsSL https://raw.githubusercontent.com/SalvucciFacundo/ARIS/main/install.sh | bash
+```
+
+### 🐹 Install via Go (Go 1.23+)
+```bash
+go install github.com/SalvucciFacundo/ARIS/cmd/aris@latest
+```
+
+### 📦 Manual Binary Download
+Download the pre-compiled binary for your OS (Linux, macOS Apple Silicon/Intel, Windows) from the [GitHub Releases](https://github.com/SalvucciFacundo/ARIS/releases) page.
+
+### 🛠️ Build from Source
+```bash
 git clone https://github.com/SalvucciFacundo/ARIS.git
 cd ARIS
-
-# Build the standalone binary
 go build -o aris ./cmd/aris
 ```
 

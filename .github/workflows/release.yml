@@ -5,22 +5,76 @@ on:
     tags:
       - 'v*'
 
+permissions:
+  contents: write
+
 jobs:
-  build:
+  release:
+    name: Build & Release Multi-Platform Binaries
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
 
-      - uses: actions/setup-go@v5
+      - name: Setup Go
+        uses: actions/setup-go@v5
         with:
           go-version: '1.23'
 
-      - name: Build aris
+      - name: Install zip & tools
+        run: sudo apt-get update && sudo apt-get install -y zip tar
+
+      - name: Install templ
+        run: go install github.com/a-h/templ/cmd/templ@v0.3.906
+
+      - name: Generate Templ components
+        run: templ generate
+
+      - name: Build Multi-Platform Matrix
+        env:
+          VERSION: ${{ github.ref_name }}
         run: |
           mkdir -p dist
-          go build -ldflags="-s -w" -o dist/aris ./cmd/aris/ || echo "Build placeholder" > dist/aris.txt
 
-      - name: Upload binaries to release
+          PLATFORMS=(
+            "linux/amd64"
+            "linux/arm64"
+            "darwin/amd64"
+            "darwin/arm64"
+            "windows/amd64"
+          )
+
+          for PLATFORM in "${PLATFORMS[@]}"; do
+            GOOS=$(echo $PLATFORM | cut -d'/' -f1)
+            GOARCH=$(echo $PLATFORM | cut -d'/' -f2)
+
+            echo "🚀 Building for $GOOS/$GOARCH ($VERSION)..."
+            BIN_EXT=""
+            if [ "$GOOS" = "windows" ]; then
+              BIN_EXT=".exe"
+            fi
+
+            GOOS=$GOOS GOARCH=$GOARCH CGO_ENABLED=0 go build -ldflags="-s -w -X 'aris/internal/adapters/ui/cli.Version=$VERSION'" -o "dist/aris$BIN_EXT" ./cmd/aris
+
+            ARCHIVE_NAME="aris_${VERSION}_${GOOS}_${GOARCH}"
+            if [ "$GOOS" = "windows" ]; then
+              (cd dist && zip "${ARCHIVE_NAME}.zip" "aris.exe" && rm "aris.exe")
+            else
+              (cd dist && tar -czvf "${ARCHIVE_NAME}.tar.gz" "aris" && rm "aris")
+            fi
+          done
+
+          cd dist
+          sha256sum * > checksums.txt
+          echo "📦 Built artifacts ready for release:"
+          ls -lh
+
+      - name: Publish GitHub Release
         uses: softprops/action-gh-release@v2
         with:
           files: dist/*
+          generate_release_notes: true
+          draft: false
+          prerelease: false
