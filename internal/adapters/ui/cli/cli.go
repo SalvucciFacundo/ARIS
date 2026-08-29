@@ -10,6 +10,7 @@ import (
 	"aris/internal/adapters/db"
 	"aris/internal/adapters/image"
 	"aris/internal/adapters/llm"
+	"aris/internal/adapters/ui/tui"
 	"aris/internal/config"
 	"aris/internal/core/domain"
 	"aris/internal/core/ports"
@@ -85,6 +86,8 @@ func (r *Runner) Execute(args []string) int {
 	}
 
 	switch args[1] {
+	case "chat", "tui", "interactive":
+		return r.handleTUI()
 	case "gen", "generate":
 		return r.handleGen(args[2:])
 	case "backends", "backend":
@@ -113,6 +116,7 @@ Usage:
   aris gen "<prompt>" [options]
 
 Commands:
+  chat, tui           Launch interactive Cyberpunk TUI (split-screen chat & controls)
   gen, generate       Synthesize image from natural language prompt
   backends, backend   List and inspect available local & cloud image backends
   memory, mem         Manage 3-scope Knowledge Graph (list, add, search)
@@ -158,6 +162,14 @@ func (r *Runner) handleBackends(args []string) int {
 			fmt.Printf("   Supported Models: %s\n", strings.Join(b.SupportsModels(), ", "))
 		}
 		fmt.Println()
+	}
+	return 0
+}
+
+func (r *Runner) handleTUI() int {
+	if err := tui.Run(r.agent); err != nil {
+		fmt.Printf("❌ TUI error: %v\n", err)
+		return 1
 	}
 	return 0
 }

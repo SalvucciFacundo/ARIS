@@ -17,6 +17,7 @@ type AgentService struct {
 	kg       ports.KnowledgeGraphStore
 	history  ports.HistoryStore
 	critic   ports.VisionCritic
+	learner  *AutoLearner
 }
 
 // NewAgentService creates a new ARIS agent service.
@@ -27,12 +28,17 @@ func NewAgentService(
 	history ports.HistoryStore,
 	critic ports.VisionCritic,
 ) *AgentService {
+	var learner *AutoLearner
+	if kg != nil {
+		learner = NewAutoLearner(kg, llm)
+	}
 	return &AgentService{
 		llm:      llm,
 		registry: registry,
 		kg:       kg,
 		history:  history,
 		critic:   critic,
+		learner:  learner,
 	}
 }
 
@@ -140,6 +146,19 @@ func (s *AgentService) Generate(ctx context.Context, input string, opts Generate
 	// 5. PERSIST: Save to SQLite History
 	if s.history != nil {
 		_ = s.history.SaveGeneration(ctx, spec, result)
+	}
+
+	// 6. AUTO-LEARN: Autonomous memory reflection loop (Hermes / GAIA style)
+	if s.learner != nil {
+		go func() {
+			bgCtx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+			defer cancel()
+			_, _ = s.learner.ReflectTurn(bgCtx, ReflectionTurn{
+				RawInput:       input,
+				EnhancedPrompt: spec.EnhancedPrompt,
+				NegativePrompt: spec.NegativePrompt,
+			})
+		}()
 	}
 
 	return spec, result, nil
