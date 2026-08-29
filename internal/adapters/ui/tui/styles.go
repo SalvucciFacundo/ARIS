@@ -64,6 +64,17 @@ var (
 			MarginTop(1).
 			MarginBottom(1)
 
+	SubagentBadgeStyle = lipgloss.NewStyle().
+				Bold(true).
+				Foreground(ColorDarkBg).
+				Background(ColorCyan).
+				Padding(0, 1)
+
+	SubagentMsgStyle = lipgloss.NewStyle().
+				Bold(true).
+				Foreground(ColorMagenta).
+				MarginTop(1)
+
 	// Status & Knobs
 	KnobLabelStyle = lipgloss.NewStyle().
 			Bold(true).

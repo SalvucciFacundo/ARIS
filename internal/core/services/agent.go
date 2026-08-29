@@ -18,7 +18,8 @@ type AgentService struct {
 	history  ports.HistoryStore
 	critic   ports.VisionCritic
 	criticSvc *CriticService
-	learner  *AutoLearner
+	learner   *AutoLearner
+	subagents *SubagentManager
 }
 
 // NewAgentService creates a new ARIS agent service.
@@ -166,6 +167,32 @@ func (s *AgentService) Generate(ctx context.Context, input string, opts Generate
 	}
 
 	return spec, result, nil
+}
+
+// SetSubagents attaches a subagent manager to the agent service.
+func (s *AgentService) SetSubagents(sm *SubagentManager) {
+	s.subagents = sm
+}
+
+// Subagents returns the configured subagent manager.
+func (s *AgentService) Subagents() *SubagentManager {
+	return s.subagents
+}
+
+// ExecuteSubagent runs direct subagent reasoning under isolated context.
+func (s *AgentService) ExecuteSubagent(ctx context.Context, subagentName, input string) (string, error) {
+	if s.subagents == nil {
+		return "", fmt.Errorf("subagent manager not configured")
+	}
+	return s.subagents.ExecuteDirect(ctx, subagentName, input)
+}
+
+// PipelineGenerate executes the full multi-agent generation pipeline.
+func (s *AgentService) PipelineGenerate(ctx context.Context, prompt string, opts PipelineOptions) (*PipelineResult, error) {
+	if s.subagents == nil {
+		return nil, fmt.Errorf("subagent manager not configured")
+	}
+	return s.subagents.PipelineExecute(ctx, prompt, opts)
 }
 
 // Registry returns the backend registry.

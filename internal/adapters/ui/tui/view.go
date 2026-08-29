@@ -46,6 +46,10 @@ func (m Model) View() string {
 	rightContent.WriteString(KnobLabelStyle.Render("Ratio:   ") + KnobValueStyle.Render(string(m.activeRatio)) + " (Tab to cycle)\n")
 	rightContent.WriteString(KnobLabelStyle.Render("Model:   ") + KnobValueStyle.Render(m.activeModel) + "\n\n")
 
+	// Specialized Visual Subagents
+	rightContent.WriteString(KnobLabelStyle.Render("🤖 Visual Subagents (@name):") + "\n")
+	rightContent.WriteString(FactStyle.Render("  • @director  • @promptsmith  • @critic\n  • @curator   • @enhancer") + "\n\n")
+
 	// Recalled / Learned Knowledge Graph Facts
 	rightContent.WriteString(KnobLabelStyle.Render("🧠 Knowledge Graph Memory:") + "\n")
 	if len(m.facts) == 0 {

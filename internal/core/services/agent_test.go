@@ -83,4 +83,31 @@ func TestAgentService_GenerateWorkflow(t *testing.T) {
 	if len(historyList) != 1 {
 		t.Fatalf("expected 1 history entry, got %d", len(historyList))
 	}
+
+	// 4. Test Subagent Manager Integration on AgentService
+	subStore := db.NewSubagentStore(sqlDB.DB())
+	subMgr := services.NewSubagentManager(subStore, llmProvider, reg, nil, kg)
+	agent.SetSubagents(subMgr)
+
+	if agent.Subagents() == nil {
+		t.Fatal("expected subagents manager to be set")
+	}
+
+	resp, err := agent.ExecuteSubagent(ctx, "director", "cinematic cyberpunk cityscape")
+	if err != nil {
+		t.Fatalf("ExecuteSubagent failed: %v", err)
+	}
+	if resp == "" {
+		t.Error("expected non-empty subagent response")
+	}
+
+	pipeRes, err := agent.PipelineGenerate(ctx, "cyberpunk alley", services.PipelineOptions{
+		AspectRatio: domain.RatioLandscape,
+	})
+	if err != nil {
+		t.Fatalf("PipelineGenerate failed: %v", err)
+	}
+	if pipeRes.DirectorConcept == "" {
+		t.Error("expected director concept in pipeline result")
+	}
 }

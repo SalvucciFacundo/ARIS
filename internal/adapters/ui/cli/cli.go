@@ -76,6 +76,9 @@ func NewRunner() (*Runner, error) {
 	}
 
 	agent := services.NewAgentService(llmProvider, reg, kg, history, visionCritic)
+	subStore := db.NewSubagentStore(sqlDB.DB())
+	subMgr := services.NewSubagentManager(subStore, llmProvider, reg, visionCritic, kg)
+	agent.SetSubagents(subMgr)
 
 	return &Runner{
 		cfg:   cfg,
@@ -103,6 +106,8 @@ func (r *Runner) Execute(args []string) int {
 		return r.handleTUI()
 	case "gen", "generate":
 		return r.handleGen(args[2:])
+	case "subagents", "subagent", "sub":
+		return r.handleSubagents(args[2:])
 	case "backends", "backend":
 		return r.handleBackends(args[2:])
 	case "memory", "mem":
@@ -127,10 +132,13 @@ func (r *Runner) printHelp() {
 Usage:
   aris <command> [options]
   aris gen "<prompt>" [options]
+  aris gen "@director <prompt>"
+  aris subagents [list|show|run]
 
 Commands:
   chat, tui           Launch interactive Cyberpunk TUI (split-screen chat & controls)
-  gen, generate       Synthesize image from natural language prompt
+  gen, generate       Synthesize image from natural language prompt (or route via @name)
+  subagents, sub      Inspect and run specialized visual subagents
   backends, backend   List and inspect available local & cloud image backends
   memory, mem         Manage 3-scope Knowledge Graph (list, add, search)
   history, hist       View past generations log
@@ -148,7 +156,11 @@ Options for 'gen':
 
 Examples:
   aris gen "a cyberpunk cat in neo tokyo" --ratio 16:9 --backend pollinations
-  aris gen "hyperrealistic portrait of an old sailor" --backend falai --critic --auto-heal
+  aris gen "@director a neon cyberpunk alley in neo tokyo"
+  aris gen "@promptsmith: hyperrealistic portrait of a space explorer"
+  aris subagents list
+  aris subagents show director
+  aris subagents run critic "evaluate anatomical accuracy"
   aris chat
   aris backends
   aris memory add --topic "style:cyberpunk" --concept "lighting" --fact "neon reflections, volumetric fog"
@@ -233,6 +245,25 @@ func (r *Runner) handleGen(args []string) int {
 	if strings.TrimSpace(rawPrompt) == "" {
 		fmt.Println("❌ Error: prompt cannot be empty.")
 		return 1
+	}
+
+	// Detect direct subagent routing (@director, @promptsmith, @critic, @curator, @enhancer)
+	if subName, cleanPrompt, isSub := services.ParseSubagentRoute(rawPrompt); isSub {
+		if cleanPrompt == "" {
+			fmt.Printf("❌ Error: input prompt required for subagent @%s\n", subName)
+			return 1
+		}
+		ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+		defer cancel()
+
+		fmt.Printf("🤖 Routing to Subagent @%s: %q\n", subName, cleanPrompt)
+		resp, err := r.agent.ExecuteSubagent(ctx, subName, cleanPrompt)
+		if err != nil {
+			fmt.Printf("❌ Subagent execution failed: %v\n", err)
+			return 1
+		}
+		fmt.Printf("\n💬 Response from @%s:\n%s\n", subName, resp)
+		return 0
 	}
 
 	opts := services.GenerateOptions{
@@ -378,4 +409,75 @@ func (r *Runner) handleHistory(args []string) int {
 			i+1, rec.CreatedAt.Format("2006-01-02 15:04"), rec.PromptRaw, rec.Width, rec.Height, rec.Seed, rec.ImagePath)
 	}
 	return 0
+}
+
+func (r *Runner) handleSubagents(args []string) int {
+	if len(args) == 0 {
+		args = []string{"list"}
+	}
+
+	subcmd := args[0]
+	ctx := context.Background()
+	sm := r.agent.Subagents()
+	if sm == nil {
+		fmt.Println("❌ Error: Subagent manager not initialized.")
+		return 1
+	}
+
+	switch subcmd {
+	case "list", "ls":
+		subagents, err := sm.ListSubagents(ctx)
+		if err != nil {
+			fmt.Printf("❌ Failed to list subagents: %v\n", err)
+			return 1
+		}
+		fmt.Printf("🤖 ARIS Specialized Visual Subagents (%d active):\n\n", len(subagents))
+		for i, sub := range subagents {
+			fmt.Printf("%d. @%s — %s (%s)\n", i+1, sub.Name, sub.DisplayName, sub.Role)
+			fmt.Printf("   🌡️ Temp: %.2f | 🛠️ Tools: %s\n", sub.Temperature, strings.Join(sub.AllowedTools, ", "))
+			fmt.Printf("   📝 %s\n\n", sub.Description)
+		}
+		return 0
+
+	case "show", "info", "get":
+		if len(args) < 2 {
+			fmt.Println("Usage: aris subagents show <name>")
+			return 1
+		}
+		name := args[1]
+		sub, err := sm.GetSubagent(ctx, name)
+		if err != nil {
+			fmt.Printf("❌ %v\n", err)
+			return 1
+		}
+		fmt.Printf("🤖 Subagent @%s (%s)\n", sub.Name, sub.DisplayName)
+		fmt.Printf("Role:         %s\n", sub.Role)
+		fmt.Printf("Temperature:  %.2f\n", sub.Temperature)
+		fmt.Printf("Tools:        %s\n", strings.Join(sub.AllowedTools, ", "))
+		fmt.Printf("Description:  %s\n", sub.Description)
+		fmt.Printf("Personality:  %s\n", sub.Personality)
+		fmt.Printf("\n📜 System Prompt:\n%s\n", sub.SystemPrompt)
+		return 0
+
+	case "run", "exec":
+		if len(args) < 3 {
+			fmt.Println("Usage: aris subagents run <name> \"<prompt>\"")
+			return 1
+		}
+		name := args[1]
+		prompt := strings.Join(args[2:], " ")
+		fmt.Printf("🤖 Running subagent @%s with prompt: %q\n", name, prompt)
+		resp, err := sm.ExecuteDirect(ctx, name, prompt)
+		if err != nil {
+			fmt.Printf("❌ Subagent execution failed: %v\n", err)
+			return 1
+		}
+		fmt.Printf("\n💬 Response from @%s:\n%s\n", name, resp)
+		return 0
+
+	default:
+		fmt.Printf("Unknown subagent command: %s\n", subcmd)
+		fmt.Println("Usage: aris subagents [list|show <name>|run <name> \"<prompt>\"]")
+		return 1
+	}
 }

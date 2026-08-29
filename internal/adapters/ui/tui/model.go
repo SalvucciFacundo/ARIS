@@ -18,16 +18,23 @@ import (
 )
 
 type chatMessage struct {
-	role    string // "user", "agent", "thought", "system"
-	content string
-	spec    *domain.ImageSpec
-	result  *domain.ImageResult
+	role         string // "user", "agent", "subagent", "thought", "system"
+	subagentName string // e.g. "director", "promptsmith", "critic", "curator", "enhancer"
+	content      string
+	spec         *domain.ImageSpec
+	result       *domain.ImageResult
 }
 
 type genCompletedMsg struct {
 	spec   *domain.ImageSpec
 	result *domain.ImageResult
 	err    error
+}
+
+type subagentCompletedMsg struct {
+	name    string
+	content string
+	err     error
 }
 
 type previewLoadedMsg struct {
@@ -133,6 +140,32 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				return m, nil
 			}
 
+			// Check for direct subagent routing (@name)
+			subName, cleanPrompt, isSub := services.ParseSubagentRoute(input)
+			if isSub {
+				if cleanPrompt == "" {
+					m.messages = append(m.messages, chatMessage{
+						role:    "system",
+						content: fmt.Sprintf("❌ Prompt required for subagent @%s", subName),
+					})
+					m.updateViewportContent()
+					return m, nil
+				}
+				m.textarea.Reset()
+				m.messages = append(m.messages, chatMessage{
+					role:    "user",
+					content: input,
+				})
+				m.isGenerating = true
+				m.statusText = fmt.Sprintf("Consulting specialized subagent @%s...", subName)
+				m.updateViewportContent()
+
+				return m, tea.Batch(
+					m.spinner.Tick,
+					m.executeSubagentCmd(subName, cleanPrompt),
+				)
+			}
+
 			m.textarea.Reset()
 			m.messages = append(m.messages, chatMessage{
 				role:    "user",
@@ -185,6 +218,24 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			// Render ANSI preview
 			cmds = append(cmds, m.loadPreviewCmd(msg.result.LocalPath))
 			cmds = append(cmds, m.loadRecentFactsCmd())
+		}
+		m.updateViewportContent()
+
+	case subagentCompletedMsg:
+		m.isGenerating = false
+		if msg.err != nil {
+			m.statusText = fmt.Sprintf("Subagent error: %v", msg.err)
+			m.messages = append(m.messages, chatMessage{
+				role:    "system",
+				content: fmt.Sprintf("❌ Subagent @%s failed: %v", msg.name, msg.err),
+			})
+		} else {
+			m.statusText = fmt.Sprintf("💬 Response received from @%s", msg.name)
+			m.messages = append(m.messages, chatMessage{
+				role:         "subagent",
+				subagentName: msg.name,
+				content:      msg.content,
+			})
 		}
 		m.updateViewportContent()
 
@@ -263,12 +314,44 @@ func (m *Model) updateViewportContent() {
 				b.WriteString(FactStyle.Render(fmt.Sprintf("💾 Saved: %s (%v)\n", msg.result.LocalPath, msg.result.Duration.Round(time.Millisecond))))
 			}
 			b.WriteString("\n")
+		case "subagent":
+			badge := fmt.Sprintf("🤖 @%s", msg.subagentName)
+			switch msg.subagentName {
+			case "director":
+				badge = "🎨 @director (Art Director):"
+			case "promptsmith":
+				badge = "🔧 @promptsmith (Prompt Engineer):"
+			case "critic":
+				badge = "👁️ @critic (Visual QA):"
+			case "curator":
+				badge = "📚 @curator (Aesthetic Memory):"
+			case "enhancer":
+				badge = "✨ @enhancer (Post-Processing):"
+			default:
+				badge = fmt.Sprintf("🤖 @%s:", msg.subagentName)
+			}
+			b.WriteString(SubagentMsgStyle.Render(badge) + "\n")
+			b.WriteString(AgentMsgStyle.Render(msg.content) + "\n\n")
 		case "system":
 			b.WriteString(msg.content + "\n\n")
 		}
 	}
 	m.viewport.SetContent(b.String())
 	m.viewport.GotoBottom()
+}
+
+func (m Model) executeSubagentCmd(name, prompt string) tea.Cmd {
+	return func() tea.Msg {
+		ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+		defer cancel()
+
+		resp, err := m.agent.ExecuteSubagent(ctx, name, prompt)
+		return subagentCompletedMsg{
+			name:    name,
+			content: resp,
+			err:     err,
+		}
+	}
 }
 
 func (m Model) generateImageCmd(input string) tea.Cmd {

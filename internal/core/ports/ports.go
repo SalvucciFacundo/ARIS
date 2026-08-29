@@ -50,3 +50,11 @@ type HistoryStore interface {
 	GetHistory(ctx context.Context, limit, offset int) ([]domain.GenerationRecord, error)
 	GetByID(ctx context.Context, id string) (*domain.GenerationRecord, error)
 }
+
+// SubagentStore manages persistent subagent definitions in SQLite.
+type SubagentStore interface {
+	SaveSubagent(ctx context.Context, def domain.SubagentDef) error
+	GetSubagent(ctx context.Context, name string) (*domain.SubagentDef, error)
+	ListSubagents(ctx context.Context) ([]domain.SubagentDef, error)
+	DeleteSubagent(ctx context.Context, name string) error
+}

@@ -1,10 +1,13 @@
 package db
 
 import (
+	"context"
 	"database/sql"
 	"fmt"
 	"os"
 	"path/filepath"
+
+	"aris/internal/core/domain"
 
 	_ "modernc.org/sqlite"
 )
@@ -110,7 +113,45 @@ func (s *SQLiteDB) migrate() error {
 	);
 
 	CREATE INDEX IF NOT EXISTS idx_generations_created ON generations(created_at DESC);
+
+	-- Dynamic Subagent Definitions Table
+	CREATE TABLE IF NOT EXISTS subagent_defs (
+		name TEXT PRIMARY KEY,
+		display_name TEXT NOT NULL DEFAULT '',
+		role TEXT NOT NULL DEFAULT '',
+		description TEXT NOT NULL DEFAULT '',
+		system_prompt TEXT NOT NULL,
+		personality TEXT NOT NULL DEFAULT '',
+		temperature REAL NOT NULL DEFAULT 0.7,
+		model TEXT NOT NULL DEFAULT '',
+		allowed_tools TEXT NOT NULL DEFAULT '[]',
+		created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+		updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
+	);
 	`
-	_, err := s.db.Exec(schema)
-	return err
+	if _, err := s.db.Exec(schema); err != nil {
+		return err
+	}
+
+	return s.bootstrapDefaultSubagents()
+}
+
+func (s *SQLiteDB) bootstrapDefaultSubagents() error {
+	var count int
+	if err := s.db.QueryRow("SELECT COUNT(*) FROM subagent_defs").Scan(&count); err != nil {
+		return err
+	}
+	if count > 0 {
+		return nil
+	}
+
+	// Bootstrap default subagents
+	defaults := domain.DefaultSubagents()
+	store := NewSubagentStore(s.db)
+	ctx := context.Background()
+
+	for _, sub := range defaults {
+		_ = store.SaveSubagent(ctx, sub)
+	}
+	return nil
 }
