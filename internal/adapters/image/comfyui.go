@@ -365,22 +365,7 @@ func (c *ComfyUIBackend) buildComfyGraph(ctx context.Context, spec *domain.Image
 	}
 
 	// Standard text2img
-	return map[string]any{
-		"3": map[string]any{
-			"class_type": "KSampler",
-			"inputs": map[string]any{
-				"cfg":          cfg,
-				"denoise":      1.0,
-				"latent_image": []any{"5", 0},
-				"model":        []any{"4", 0},
-				"negative":     []any{"7", 0},
-				"positive":     []any{"6", 0},
-				"sampler_name": "euler",
-				"scheduler":    "normal",
-				"seed":         seed,
-				"steps":        steps,
-			},
-		},
+	graph := map[string]any{
 		"4": map[string]any{
 			"class_type": "CheckpointLoaderSimple",
 			"inputs": map[string]any{
@@ -393,20 +378,6 @@ func (c *ComfyUIBackend) buildComfyGraph(ctx context.Context, spec *domain.Image
 				"batch_size": 1,
 				"height":     h,
 				"width":      w,
-			},
-		},
-		"6": map[string]any{
-			"class_type": "CLIPTextEncode",
-			"inputs": map[string]any{
-				"clip": []any{"4", 1},
-				"text": prompt,
-			},
-		},
-		"7": map[string]any{
-			"class_type": "CLIPTextEncode",
-			"inputs": map[string]any{
-				"clip": []any{"4", 1},
-				"text": spec.NegativePrompt,
 			},
 		},
 		"8": map[string]any{
@@ -423,7 +394,99 @@ func (c *ComfyUIBackend) buildComfyGraph(ctx context.Context, spec *domain.Image
 				"images":          []any{"8", 0},
 			},
 		},
-	}, nil
+	}
+
+	modelRef := []any{"4", 0}
+	clipRef := []any{"4", 1}
+
+	// Chain LoRAs if present
+	for i, lora := range spec.LoRAs {
+		loraNodeID := fmt.Sprintf("lora_%d", i+1)
+		graph[loraNodeID] = map[string]any{
+			"class_type": "LoraLoader",
+			"inputs": map[string]any{
+				"lora_name":      lora.Name,
+				"strength_model": lora.Scale,
+				"strength_clip":  lora.Scale,
+				"model":          modelRef,
+				"clip":           clipRef,
+			},
+		}
+		modelRef = []any{loraNodeID, 0}
+		clipRef = []any{loraNodeID, 1}
+	}
+
+	graph["6"] = map[string]any{
+		"class_type": "CLIPTextEncode",
+		"inputs": map[string]any{
+			"clip": clipRef,
+			"text": prompt,
+		},
+	}
+	graph["7"] = map[string]any{
+		"class_type": "CLIPTextEncode",
+		"inputs": map[string]any{
+			"clip": clipRef,
+			"text": spec.NegativePrompt,
+		},
+	}
+
+	posCondRef := []any{"6", 0}
+
+	// Chain ControlNets if present
+	for j, cn := range spec.ControlNets {
+		cnetImgName, err := c.uploadImage(ctx, cn.RefImage())
+		if err != nil {
+			return nil, fmt.Errorf("upload controlnet reference image: %w", err)
+		}
+
+		imgNodeID := fmt.Sprintf("cnet_img_%d", j+1)
+		graph[imgNodeID] = map[string]any{
+			"class_type": "LoadImage",
+			"inputs": map[string]any{
+				"image": cnetImgName,
+			},
+		}
+
+		loaderNodeID := fmt.Sprintf("cnet_loader_%d", j+1)
+		cnModelName := fmt.Sprintf("controlnet-%s-sdxl-1.0.safetensors", strings.ToLower(cn.Type))
+		graph[loaderNodeID] = map[string]any{
+			"class_type": "ControlNetLoader",
+			"inputs": map[string]any{
+				"control_net_name": cnModelName,
+			},
+		}
+
+		applyNodeID := fmt.Sprintf("cnet_apply_%d", j+1)
+		graph[applyNodeID] = map[string]any{
+			"class_type": "ApplyControlNet",
+			"inputs": map[string]any{
+				"strength":     cn.Strength,
+				"conditioning": posCondRef,
+				"control_net":  []any{loaderNodeID, 0},
+				"image":        []any{imgNodeID, 0},
+			},
+		}
+		posCondRef = []any{applyNodeID, 0}
+	}
+
+	graph["3"] = map[string]any{
+		"class_type": "KSampler",
+		"inputs": map[string]any{
+			"cfg":          cfg,
+			"denoise":      1.0,
+			"latent_image": []any{"5", 0},
+			"model":        modelRef,
+			"negative":     []any{"7", 0},
+			"positive":     posCondRef,
+			"sampler_name": "euler",
+			"scheduler":    "normal",
+			"seed":         seed,
+			"steps":        steps,
+		},
+	}
+
+	return graph, nil
 }
 
 type comfyPromptReq struct {
@@ -573,6 +636,18 @@ func (c *ComfyUIBackend) Generate(ctx context.Context, spec *domain.ImageSpec) (
 		return nil, fmt.Errorf("save image bytes: %w", err)
 	}
 
+	meta := map[string]any{
+		"backend":   "comfyui",
+		"prompt_id": promptID,
+		"filename":  imageFilename,
+	}
+	if spec.HasLoRA() {
+		meta["loras"] = spec.LoRAs
+	}
+	if spec.HasControlNet() {
+		meta["controlnets"] = spec.ControlNets
+	}
+
 	return &domain.ImageResult{
 		ID:          uuid.New().String(),
 		SpecID:      spec.ID,
@@ -581,10 +656,6 @@ func (c *ComfyUIBackend) Generate(ctx context.Context, spec *domain.ImageSpec) (
 		Format:      "png",
 		SizeInBytes: written,
 		Duration:    time.Since(start),
-		Metadata: map[string]any{
-			"backend":   "comfyui",
-			"prompt_id": promptID,
-			"filename":  imageFilename,
-		},
+		Metadata:    meta,
 	}, nil
 }

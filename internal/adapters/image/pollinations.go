@@ -188,6 +188,22 @@ func (p *PollinationsBackend) Generate(ctx context.Context, spec *domain.ImageSp
 	}
 
 	duration := time.Since(start)
+	meta := map[string]any{
+		"backend": "pollinations",
+		"model":   spec.Model,
+		"width":   spec.Width,
+		"height":  spec.Height,
+		"seed":    spec.Seed,
+	}
+	if spec.HasLoRA() {
+		meta["loras"] = spec.LoRAs
+		meta["warning_lora"] = "pollinations does not support dynamic LoRA loading"
+	}
+	if spec.HasControlNet() {
+		meta["controlnets"] = spec.ControlNets
+		meta["warning_controlnet"] = "pollinations does not support ControlNet conditioning"
+	}
+
 	result := &domain.ImageResult{
 		ID:          uuid.New().String(),
 		SpecID:      spec.ID,
@@ -196,13 +212,7 @@ func (p *PollinationsBackend) Generate(ctx context.Context, spec *domain.ImageSp
 		Format:      "jpg",
 		SizeInBytes: written,
 		Duration:    duration,
-		Metadata: map[string]any{
-			"backend": "pollinations",
-			"model":   spec.Model,
-			"width":   spec.Width,
-			"height":  spec.Height,
-			"seed":    spec.Seed,
-		},
+		Metadata:    meta,
 	}
 
 	return result, nil

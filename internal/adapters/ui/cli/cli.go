@@ -123,6 +123,10 @@ func (r *Runner) Execute(args []string) int {
 		return r.handleUpscale(args[2:])
 	case "batch":
 		return r.handleBatch(args[2:])
+	case "lora":
+		return r.handleLoRA(args[2:])
+	case "controlnet", "cnet":
+		return r.handleControlNet(args[2:])
 	case "subagents", "subagent", "sub":
 		return r.handleSubagents(args[2:])
 	case "backends", "backend":
@@ -164,6 +168,8 @@ Commands:
   batch               Batch generation, prompt matrix expansion & A/B benchmarking
   edit                Transform or inpaint reference images (img2img / inpaint)
   upscale, superres   Super-resolution scaling (2x, 4x, 8x) & facial reconstruction
+  lora                Inspect and manage local LoRA weight models
+  controlnet, cnet    Inspect ControlNet types and run local edge preprocessors
   subagents, sub      Inspect and run specialized visual subagents
   backends, backend   List and inspect available local & cloud image backends
   memory, mem         Manage 3-scope Knowledge Graph (list, add, search)
@@ -176,6 +182,8 @@ Options for 'gen' and 'edit':
   -m, --model         Model name (e.g. flux, flux-realism, dall-e-3, sd-3.5)
   -r, --ratio         Aspect ratio: 1:1, 16:9, 9:16, 4:3, 3:4, 21:9 (default: 1:1)
   -s, --strength      Denoise strength [0.0 - 1.0] for edit (default: 0.70)
+  --lora <name:scale> LoRA weight model to apply (can be repeated or comma-separated)
+  --controlnet <spec> ControlNet structural conditioning: <type>:<scale>:<image_path>
   --mask <path>       Mask image for inpainting (with 'edit')
   -n, --negative      Negative prompt keywords
   --critic            Run VLM visual critique on generated output
@@ -311,14 +319,28 @@ func (r *Runner) handleGen(args []string) int {
 	_ = genFlags.String("b", "pollinations", "Shorthand for backend")
 	criticFlag := genFlags.Bool("critic", false, "Enable VLM vision critique")
 	autoHealFlag := genFlags.Bool("auto-heal", false, "Enable automated self-healing re-roll")
+	loraFlag := genFlags.String("lora", "", "LoRA model stacking (<name>:<scale>)")
+	cnetFlag := genFlags.String("controlnet", "", "ControlNet conditioning (<type>:<scale>:<path>)")
 
 	// Parse flags while leaving raw prompt intact
 	var promptParts []string
 	var flagArgs []string
+	var loraRawFlags []string
+	var cnetRawFlags []string
 
 	for i := 0; i < len(args); i++ {
 		arg := args[i]
-		if strings.HasPrefix(arg, "-") {
+		if arg == "--lora" && i+1 < len(args) {
+			loraRawFlags = append(loraRawFlags, args[i+1])
+			i++
+		} else if strings.HasPrefix(arg, "--lora=") {
+			loraRawFlags = append(loraRawFlags, strings.TrimPrefix(arg, "--lora="))
+		} else if arg == "--controlnet" && i+1 < len(args) {
+			cnetRawFlags = append(cnetRawFlags, args[i+1])
+			i++
+		} else if strings.HasPrefix(arg, "--controlnet=") {
+			cnetRawFlags = append(cnetRawFlags, strings.TrimPrefix(arg, "--controlnet="))
+		} else if strings.HasPrefix(arg, "-") {
 			flagArgs = append(flagArgs, arg)
 			if i+1 < len(args) && !strings.HasPrefix(args[i+1], "-") {
 				flagArgs = append(flagArgs, args[i+1])
@@ -330,6 +352,24 @@ func (r *Runner) handleGen(args []string) int {
 	}
 
 	_ = genFlags.Parse(flagArgs)
+	if *loraFlag != "" {
+		loraRawFlags = append(loraRawFlags, *loraFlag)
+	}
+	if *cnetFlag != "" {
+		cnetRawFlags = append(cnetRawFlags, *cnetFlag)
+	}
+
+	loraConfigs, err := ParseLoRAFlags(loraRawFlags)
+	if err != nil {
+		fmt.Printf("❌ %v\n", err)
+		return 1
+	}
+
+	cnetConfigs, err := ParseControlNetFlags(cnetRawFlags)
+	if err != nil {
+		fmt.Printf("❌ %v\n", err)
+		return 1
+	}
 
 	rawPrompt := strings.Join(promptParts, " ")
 	if strings.TrimSpace(rawPrompt) == "" {
@@ -362,6 +402,8 @@ func (r *Runner) handleGen(args []string) int {
 		Backend:        *backendFlag,
 		Seed:           *seedFlag,
 		NegativePrompt: *negFlag,
+		LoRAs:          loraConfigs,
+		ControlNets:    cnetConfigs,
 		EnableCritic:   *criticFlag,
 		AutoHeal:       *autoHealFlag,
 	}

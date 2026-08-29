@@ -8,6 +8,7 @@ import (
 
 	"aris/internal/core/domain"
 	"aris/internal/core/ports"
+	"aris/pkg/prompt"
 )
 
 // AgentService is the core orchestrator of ARIS.
@@ -64,6 +65,8 @@ type GenerateOptions struct {
 	RestoreFaces    bool
 	FaceFidelity    float64
 	UpscalerModel   string
+	LoRAs           []domain.LoRAConfig
+	ControlNets     []domain.ControlNetConfig
 	Project         string
 	EnableCritic    bool
 	AutoHeal        bool
@@ -75,19 +78,36 @@ func (s *AgentService) Generate(ctx context.Context, input string, opts Generate
 		return nil, nil, fmt.Errorf("prompt cannot be empty")
 	}
 
+	// Extract any inline <lora:name:scale> tags from the raw prompt
+	cleanInput, inlineLoRAs := prompt.ExtractLoRAs(input)
+	if cleanInput == "" {
+		cleanInput = input
+	}
+
 	// 1. RECALL: Query Knowledge Graph for relevant facts and styles
 	var recalledFacts []domain.KnowledgeFact
 	if s.kg != nil {
-		facts, err := s.kg.SearchFacts(ctx, input, "", 5)
+		facts, err := s.kg.SearchFacts(ctx, cleanInput, "", 5)
 		if err == nil {
 			recalledFacts = facts
 		}
 	}
 
 	// 2. REASON: LLM / Heuristic acts as Art Director & Prompt Architect
-	spec, err := s.llm.ReasonPrompt(ctx, input, recalledFacts)
+	spec, err := s.llm.ReasonPrompt(ctx, cleanInput, recalledFacts)
 	if err != nil {
 		return nil, nil, fmt.Errorf("reasoning failed: %w", err)
+	}
+
+	// Merge inline LoRAs with any explicitly provided opts.LoRAs
+	mergedLoRAs := prompt.MergeLoRAs(inlineLoRAs, opts.LoRAs)
+	if len(mergedLoRAs) > 0 {
+		spec.LoRAs = prompt.MergeLoRAs(spec.LoRAs, mergedLoRAs)
+	}
+
+	// Set ControlNets if provided in options
+	if len(opts.ControlNets) > 0 {
+		spec.ControlNets = append(spec.ControlNets, opts.ControlNets...)
 	}
 
 	// Apply CLI/User overrides

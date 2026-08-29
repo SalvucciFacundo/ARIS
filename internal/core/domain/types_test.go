@@ -310,3 +310,111 @@ func TestImageSpec_Validate(t *testing.T) {
 		t.Errorf("unexpected error for valid text2img: %v", err)
 	}
 }
+
+func TestImageSpec_LoRA_And_ControlNet(t *testing.T) {
+	// HasLoRA & HasControlNet
+	spec := &domain.ImageSpec{}
+	if spec.HasLoRA() {
+		t.Errorf("expected HasLoRA to be false for empty spec")
+	}
+	if spec.HasControlNet() {
+		t.Errorf("expected HasControlNet to be false for empty spec")
+	}
+
+	spec.LoRAs = []domain.LoRAConfig{
+		{Name: "neon_cyber", Scale: 0.85},
+	}
+	spec.ControlNets = []domain.ControlNetConfig{
+		{Type: "canny", Strength: 0.75},
+	}
+	if !spec.HasLoRA() {
+		t.Errorf("expected HasLoRA to be true")
+	}
+	if !spec.HasControlNet() {
+		t.Errorf("expected HasControlNet to be true")
+	}
+
+	// ApplyDefaults for LoRAs and ControlNets
+	specDefaults := &domain.ImageSpec{
+		LoRAs: []domain.LoRAConfig{
+			{Name: "default_scale", Scale: 0.0},
+			{Name: "clamped_high", Scale: 3.5},
+			{Name: "clamped_low", Scale: -1.0},
+			{Name: "valid_scale", Scale: 1.5},
+		},
+		ControlNets: []domain.ControlNetConfig{
+			{Type: "CANNY", Strength: 0.0},
+			{Type: "depth", Strength: 2.5},
+			{Type: "openpose", Strength: -0.5},
+			{Type: "lineart", Strength: 1.2},
+		},
+	}
+	specDefaults.ApplyDefaults()
+
+	// Verify LoRA defaults
+	if specDefaults.LoRAs[0].Scale != 1.0 {
+		t.Errorf("expected default scale 1.0, got %f", specDefaults.LoRAs[0].Scale)
+	}
+	if specDefaults.LoRAs[1].Scale != 2.0 {
+		t.Errorf("expected clamped scale 2.0, got %f", specDefaults.LoRAs[1].Scale)
+	}
+	if specDefaults.LoRAs[2].Scale != 0.0 {
+		t.Errorf("expected clamped scale 0.0, got %f", specDefaults.LoRAs[2].Scale)
+	}
+	if specDefaults.LoRAs[3].Scale != 1.5 {
+		t.Errorf("expected valid scale 1.5, got %f", specDefaults.LoRAs[3].Scale)
+	}
+
+	// Verify ControlNet defaults
+	if specDefaults.ControlNets[0].Strength != 1.0 {
+		t.Errorf("expected default strength 1.0, got %f", specDefaults.ControlNets[0].Strength)
+	}
+	if specDefaults.ControlNets[1].Strength != 2.0 {
+		t.Errorf("expected clamped strength 2.0, got %f", specDefaults.ControlNets[1].Strength)
+	}
+	if specDefaults.ControlNets[2].Strength != 0.0 {
+		t.Errorf("expected clamped strength 0.0, got %f", specDefaults.ControlNets[2].Strength)
+	}
+	if specDefaults.ControlNets[3].Strength != 1.2 {
+		t.Errorf("expected valid strength 1.2, got %f", specDefaults.ControlNets[3].Strength)
+	}
+}
+
+func TestImageSpec_ControlNet_Validation(t *testing.T) {
+	// Valid types: canny, depth, openpose, lineart, scribble
+	validTypes := []string{"canny", "Canny", "DEPTH", "openpose", "LineArt", "scribble"}
+	for _, vt := range validTypes {
+		spec := &domain.ImageSpec{
+			ControlNets: []domain.ControlNetConfig{
+				{Type: vt, Strength: 1.0},
+			},
+		}
+		if err := spec.Validate(); err != nil {
+			t.Errorf("expected valid type %q to pass validation, got: %v", vt, err)
+		}
+	}
+
+	// Invalid types
+	invalidTypes := []string{"unknown_sketch", "segmentation_v9", "pose3d", ""}
+	for _, it := range invalidTypes {
+		spec := &domain.ImageSpec{
+			ControlNets: []domain.ControlNetConfig{
+				{Type: it, Strength: 1.0},
+			},
+		}
+		if err := spec.Validate(); err == nil {
+			t.Errorf("expected invalid type %q to fail validation, got nil", it)
+		}
+	}
+
+	// Non-existent local reference image
+	specMissingFile := &domain.ImageSpec{
+		ControlNets: []domain.ControlNetConfig{
+			{Type: "canny", Strength: 1.0, ReferenceImage: "non_existent_image_12345.png"},
+		},
+	}
+	if err := specMissingFile.Validate(); err == nil {
+		t.Errorf("expected missing reference image to fail validation, got nil")
+	}
+}
+

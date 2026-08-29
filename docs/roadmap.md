@@ -35,10 +35,10 @@
 
 ---
 
-## 🎨 Milestone 4: LoRA & ControlNet Manager (v1.3.0)
+## 🎨 Milestone 4: LoRA & ControlNet Manager (v1.3.0) — [DONE]
 
-- [ ] **LoRA Loader (`aris lora`)**: Dynamic downloading and weight blending of character/style LoRAs for ComfyUI and Fal.ai.
-- [ ] **ControlNet Structural Guidance (`aris controlnet`)**: OpenPose, Canny Edge, LineArt, and Depth Map preprocessors.
+- [x] **LoRA Loader (`aris lora`, `--lora`)**: Dynamic inline `<lora:name:scale>` prompt tag parsing and multi-LoRA stacking for ComfyUI and Fal.ai Flux.
+- [x] **ControlNet Structural Guidance (`aris controlnet`, `--controlnet`)**: Zero-dependency pure-Go Canny edge detection preprocessor, OpenPose, LineArt, Depth Map conditioning, and dynamic graph/payload assembly.
 
 ---
 

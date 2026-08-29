@@ -77,20 +77,33 @@ func (f *FalAIBackend) SupportsModels() []string {
 	}
 }
 
+type falLoRA struct {
+	Path  string  `json:"path"`
+	Scale float64 `json:"scale"`
+}
+
+type falControlNet struct {
+	ControlImageURL   string  `json:"control_image_url,omitempty"`
+	ControlnetType    string  `json:"controlnet_type,omitempty"`
+	ConditioningScale float64 `json:"conditioning_scale,omitempty"`
+}
+
 type falRequest struct {
-	Prompt              string  `json:"prompt,omitempty"`
-	NegativePrompt      string  `json:"negative_prompt,omitempty"`
-	ImageSize           string  `json:"image_size,omitempty"`
-	NumInferenceSteps   int     `json:"num_inference_steps,omitempty"`
-	GuidanceScale       float64 `json:"guidance_scale,omitempty"`
-	Seed                int64   `json:"seed,omitempty"`
-	EnableSafetyChecker bool    `json:"enable_safety_checker"`
-	ImageURL            string  `json:"image_url,omitempty"`
-	MaskURL             string  `json:"mask_url,omitempty"`
-	Strength            float64 `json:"strength,omitempty"`
-	Scale               int     `json:"scale,omitempty"`
-	FaceEnhancer        bool    `json:"face_enhancer,omitempty"`
-	FaceFidelity        float64 `json:"face_fidelity,omitempty"`
+	Prompt              string          `json:"prompt,omitempty"`
+	NegativePrompt      string          `json:"negative_prompt,omitempty"`
+	ImageSize           string          `json:"image_size,omitempty"`
+	NumInferenceSteps   int             `json:"num_inference_steps,omitempty"`
+	GuidanceScale       float64         `json:"guidance_scale,omitempty"`
+	Seed                int64           `json:"seed,omitempty"`
+	EnableSafetyChecker bool            `json:"enable_safety_checker"`
+	ImageURL            string          `json:"image_url,omitempty"`
+	MaskURL             string          `json:"mask_url,omitempty"`
+	Strength            float64         `json:"strength,omitempty"`
+	Scale               int             `json:"scale,omitempty"`
+	FaceEnhancer        bool            `json:"face_enhancer,omitempty"`
+	FaceFidelity        float64         `json:"face_fidelity,omitempty"`
+	Loras               []falLoRA       `json:"loras,omitempty"`
+	ControlNets         []falControlNet `json:"controlnets,omitempty"`
 }
 
 type falResponse struct {
@@ -198,6 +211,38 @@ func (f *FalAIBackend) Generate(ctx context.Context, spec *domain.ImageSpec) (*d
 		}
 	}
 
+	// Map LoRAs if present
+	if spec.HasLoRA() {
+		for _, l := range spec.LoRAs {
+			p := l.Path
+			if p == "" {
+				p = l.Name
+			}
+			reqPayload.Loras = append(reqPayload.Loras, falLoRA{
+				Path:  p,
+				Scale: l.Scale,
+			})
+		}
+	}
+
+	// Map ControlNets if present
+	if spec.HasControlNet() {
+		for _, cn := range spec.ControlNets {
+			uri, err := prepareImageURLOrDataURI(cn.RefImage())
+			if err != nil {
+				return nil, fmt.Errorf("prepare controlnet reference image: %w", err)
+			}
+			reqPayload.ControlNets = append(reqPayload.ControlNets, falControlNet{
+				ControlImageURL:   uri,
+				ControlnetType:    strings.ToLower(cn.Type),
+				ConditioningScale: cn.Strength,
+			})
+		}
+		if model == "" || model == "flux" || model == "fal-ai/flux/schnell" {
+			model = "fal-ai/flux-general/controlnet"
+		}
+	}
+
 	bodyBytes, err := json.Marshal(reqPayload)
 	if err != nil {
 		return nil, fmt.Errorf("marshal fal request: %w", err)
@@ -274,6 +319,19 @@ func (f *FalAIBackend) Generate(ctx context.Context, spec *domain.ImageSpec) (*d
 		return nil, fmt.Errorf("save image bytes: %w", err)
 	}
 
+	meta := map[string]any{
+		"backend": "falai",
+		"model":   model,
+		"seed":    spec.Seed,
+		"timings": falResp.Timings.Inference,
+	}
+	if spec.HasLoRA() {
+		meta["loras"] = spec.LoRAs
+	}
+	if spec.HasControlNet() {
+		meta["controlnets"] = spec.ControlNets
+	}
+
 	return &domain.ImageResult{
 		ID:          uuid.New().String(),
 		SpecID:      spec.ID,
@@ -282,12 +340,7 @@ func (f *FalAIBackend) Generate(ctx context.Context, spec *domain.ImageSpec) (*d
 		Format:      "jpg",
 		SizeInBytes: written,
 		Duration:    time.Since(start),
-		Metadata: map[string]any{
-			"backend": "falai",
-			"model":   model,
-			"seed":    spec.Seed,
-			"timings": falResp.Timings.Inference,
-		},
+		Metadata:    meta,
 	}, nil
 }
 

@@ -537,3 +537,169 @@ func TestPollinationsBackend_InpaintUnsupported(t *testing.T) {
 		t.Errorf("expected unsupported capability error, got: %v", err)
 	}
 }
+
+func TestComfyUIBackend_LoRAAndControlNetGraph(t *testing.T) {
+	tmpDir := t.TempDir()
+	cnetImg := createTestPNGFile(t, tmpDir, "cnet_pose.png", 64, 64)
+
+	var promptGraph map[string]any
+
+	comfyServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case strings.HasPrefix(r.URL.Path, "/upload/image"):
+			_ = json.NewEncoder(w).Encode(map[string]any{"name": "uploaded_cnet.png"})
+		case strings.HasPrefix(r.URL.Path, "/prompt"):
+			var body struct {
+				Prompt map[string]any `json:"prompt"`
+			}
+			_ = json.NewDecoder(r.Body).Decode(&body)
+			promptGraph = body.Prompt
+			_ = json.NewEncoder(w).Encode(map[string]any{"prompt_id": "comfy-lora-cnet"})
+		case strings.HasPrefix(r.URL.Path, "/history/comfy-lora-cnet"):
+			_ = json.NewEncoder(w).Encode(map[string]any{
+				"comfy-lora-cnet": map[string]any{
+					"outputs": map[string]any{
+						"9": map[string]any{
+							"images": []map[string]any{
+								{"filename": "out_lora_cnet.png", "subfolder": "", "type": "output"},
+							},
+						},
+					},
+				},
+			})
+		case strings.HasPrefix(r.URL.Path, "/view"):
+			w.WriteHeader(http.StatusOK)
+			_, _ = w.Write([]byte("COMFY_LORA_CNET_BYTES"))
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer comfyServer.Close()
+
+	backend := imgadapter.NewComfyUIBackend(comfyServer.URL, tmpDir, comfyServer.Client())
+
+	spec := &domain.ImageSpec{
+		ID:        "comfy-lora-cnet-test",
+		RawPrompt: "cyberpunk warrior",
+		LoRAs: []domain.LoRAConfig{
+			{Name: "neon_cyber.safetensors", Scale: 0.85},
+			{Name: "detail_booster.safetensors", Scale: 0.60},
+		},
+		ControlNets: []domain.ControlNetConfig{
+			{Type: "canny", Strength: 0.75, ReferenceImage: cnetImg},
+		},
+	}
+
+	result, err := backend.Generate(context.Background(), spec)
+	if err != nil {
+		t.Fatalf("ComfyUI LoRA+ControlNet failed: %v", err)
+	}
+	if result == nil || result.LocalPath == "" {
+		t.Fatalf("expected valid result")
+	}
+
+	// Verify LoraLoader nodes exist in graph
+	loraCount := 0
+	cnetLoaderCount := 0
+	applyCnetCount := 0
+
+	for _, node := range promptGraph {
+		if nodeMap, ok := node.(map[string]any); ok {
+			classType, _ := nodeMap["class_type"].(string)
+			switch classType {
+			case "LoraLoader", "LoraLoaderModelOnly":
+				loraCount++
+			case "ControlNetLoader":
+				cnetLoaderCount++
+			case "ApplyControlNet", "ControlNetApplyAdvanced", "ControlNetApply":
+				applyCnetCount++
+			}
+		}
+	}
+
+	if loraCount != 2 {
+		t.Errorf("expected 2 LoraLoader nodes in graph, got %d", loraCount)
+	}
+	if cnetLoaderCount != 1 {
+		t.Errorf("expected 1 ControlNetLoader node in graph, got %d", cnetLoaderCount)
+	}
+	if applyCnetCount != 1 {
+		t.Errorf("expected 1 ApplyControlNet node in graph, got %d", applyCnetCount)
+	}
+}
+
+func TestFalAIBackend_LoRAAndControlNetPayload(t *testing.T) {
+	tmpDir := t.TempDir()
+	cnetImg := createTestPNGFile(t, tmpDir, "cnet.png", 64, 64)
+
+	var capturedPayload map[string]any
+
+	cdnServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte("FAL_LORA_CNET_IMAGE"))
+	}))
+	defer cdnServer.Close()
+
+	falServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		bodyBytes, _ := io.ReadAll(r.Body)
+		_ = json.Unmarshal(bodyBytes, &capturedPayload)
+
+		resp := map[string]any{
+			"images": []map[string]any{
+				{
+					"url":          cdnServer.URL + "/output_lora.jpg",
+					"width":        64,
+					"height":       64,
+					"content_type": "image/jpeg",
+				},
+			},
+			"timings": map[string]any{
+				"inference": 1.1,
+			},
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(resp)
+	}))
+	defer falServer.Close()
+
+	backend := imgadapter.NewFalAIBackend("fake-fal-key", tmpDir, falServer.Client())
+
+	spec := &domain.ImageSpec{
+		ID:        "fal-lora-cnet-test",
+		RawPrompt: "futuristic city",
+		LoRAs: []domain.LoRAConfig{
+			{Name: "neon_v2", Scale: 1.2, Path: "https://fal.media/loras/neon_v2.safetensors"},
+		},
+		ControlNets: []domain.ControlNetConfig{
+			{Type: "canny", Strength: 0.85, ReferenceImage: cnetImg},
+		},
+	}
+
+	result, err := backend.GenerateWithBaseURL(context.Background(), spec, falServer.URL)
+	if err != nil {
+		t.Fatalf("Fal LoRA+ControlNet failed: %v", err)
+	}
+	if result == nil || result.LocalPath == "" {
+		t.Fatalf("expected valid result from Fal")
+	}
+
+	// Verify payload contains loras and controlnets
+	lorasRaw, ok := capturedPayload["loras"].([]any)
+	if !ok || len(lorasRaw) != 1 {
+		t.Fatalf("expected loras array of length 1 in payload, got %v", capturedPayload["loras"])
+	}
+	loraMap := lorasRaw[0].(map[string]any)
+	if loraMap["path"] != "https://fal.media/loras/neon_v2.safetensors" {
+		t.Errorf("expected lora path, got %v", loraMap["path"])
+	}
+
+	cnetRaw, ok := capturedPayload["controlnets"].([]any)
+	if !ok || len(cnetRaw) != 1 {
+		t.Fatalf("expected controlnets array of length 1 in payload, got %v", capturedPayload["controlnets"])
+	}
+	cnetMap := cnetRaw[0].(map[string]any)
+	if cnetMap["controlnet_type"] != "canny" {
+		t.Errorf("expected controlnet_type canny, got %v", cnetMap["controlnet_type"])
+	}
+}
+

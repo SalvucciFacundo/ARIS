@@ -273,6 +273,20 @@ func (o *OpenAIBackend) parseAndDownloadResponse(ctx context.Context, spec *doma
 		return nil, fmt.Errorf("save image bytes: %w", err)
 	}
 
+	meta := map[string]any{
+		"backend":        "openai",
+		"model":          model,
+		"revised_prompt": parsed.Data[0].RevisedPrompt,
+	}
+	if spec.HasLoRA() {
+		meta["loras"] = spec.LoRAs
+		meta["warning_lora"] = "openai dall-e does not support custom LoRA weights"
+	}
+	if spec.HasControlNet() {
+		meta["controlnets"] = spec.ControlNets
+		meta["warning_controlnet"] = "openai dall-e does not support ControlNet conditioning"
+	}
+
 	return &domain.ImageResult{
 		ID:          uuid.New().String(),
 		SpecID:      spec.ID,
@@ -281,10 +295,6 @@ func (o *OpenAIBackend) parseAndDownloadResponse(ctx context.Context, spec *doma
 		Format:      "png",
 		SizeInBytes: written,
 		Duration:    time.Since(start),
-		Metadata: map[string]any{
-			"backend":        "openai",
-			"model":          model,
-			"revised_prompt": parsed.Data[0].RevisedPrompt,
-		},
+		Metadata:    meta,
 	}, nil
 }

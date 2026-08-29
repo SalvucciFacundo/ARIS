@@ -44,13 +44,27 @@ func (r *Runner) handleEdit(args []string) int {
 	seedFlag := editFlags.Int64("seed", 0, "Seed value")
 	criticFlag := editFlags.Bool("critic", false, "Enable VLM critique")
 	autoHealFlag := editFlags.Bool("auto-heal", false, "Enable self-healing loop")
+	loraFlag := editFlags.String("lora", "", "LoRA model stacking (<name>:<scale>)")
+	cnetFlag := editFlags.String("controlnet", "", "ControlNet conditioning (<type>:<scale>:<path>)")
 
 	var positionalArgs []string
 	var flagArgs []string
+	var loraRawFlags []string
+	var cnetRawFlags []string
 
 	for i := 0; i < len(args); i++ {
 		arg := args[i]
-		if strings.HasPrefix(arg, "-") {
+		if arg == "--lora" && i+1 < len(args) {
+			loraRawFlags = append(loraRawFlags, args[i+1])
+			i++
+		} else if strings.HasPrefix(arg, "--lora=") {
+			loraRawFlags = append(loraRawFlags, strings.TrimPrefix(arg, "--lora="))
+		} else if arg == "--controlnet" && i+1 < len(args) {
+			cnetRawFlags = append(cnetRawFlags, args[i+1])
+			i++
+		} else if strings.HasPrefix(arg, "--controlnet=") {
+			cnetRawFlags = append(cnetRawFlags, strings.TrimPrefix(arg, "--controlnet="))
+		} else if strings.HasPrefix(arg, "-") {
 			flagArgs = append(flagArgs, arg)
 			if i+1 < len(args) && !strings.HasPrefix(args[i+1], "-") {
 				flagArgs = append(flagArgs, args[i+1])
@@ -62,6 +76,24 @@ func (r *Runner) handleEdit(args []string) int {
 	}
 
 	_ = editFlags.Parse(flagArgs)
+	if *loraFlag != "" {
+		loraRawFlags = append(loraRawFlags, *loraFlag)
+	}
+	if *cnetFlag != "" {
+		cnetRawFlags = append(cnetRawFlags, *cnetFlag)
+	}
+
+	loraConfigs, err := ParseLoRAFlags(loraRawFlags)
+	if err != nil {
+		fmt.Printf("❌ %v\n", err)
+		return 1
+	}
+
+	cnetConfigs, err := ParseControlNetFlags(cnetRawFlags)
+	if err != nil {
+		fmt.Printf("❌ %v\n", err)
+		return 1
+	}
 
 	if len(positionalArgs) < 2 {
 		fmt.Println("❌ Error: both <image_path> and \"<prompt>\" positional arguments are required.")
@@ -106,6 +138,8 @@ func (r *Runner) handleEdit(args []string) int {
 		MaskImage:       maskPath,
 		DenoiseStrength: *strengthFlag,
 		Mode:            mode,
+		LoRAs:           loraConfigs,
+		ControlNets:     cnetConfigs,
 		EnableCritic:    *criticFlag,
 		AutoHeal:        *autoHealFlag,
 	}

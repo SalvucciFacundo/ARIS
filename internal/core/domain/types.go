@@ -2,8 +2,36 @@ package domain
 
 import (
 	"fmt"
+	"os"
+	"strings"
 	"time"
 )
+
+// LoRAConfig represents a Low-Rank Adaptation model and its weight scale.
+type LoRAConfig struct {
+	Name  string  `json:"name"`
+	Scale float64 `json:"scale"`
+	Path  string  `json:"path,omitempty"`
+}
+
+// ControlNetConfig represents a structural conditioning configuration.
+type ControlNetConfig struct {
+	Type             string  `json:"type"`                        // e.g. "canny", "depth", "openpose", "lineart", "scribble"
+	Strength         float64 `json:"strength"`                    // Conditioning scale [0.0, 2.0]
+	ReferenceImage   string  `json:"reference_image,omitempty"`   // Local path or URL to reference image
+	InputPath        string  `json:"input_path,omitempty"`        // Alias for reference image path
+	Preprocess       bool    `json:"preprocess,omitempty"`        // Flag to trigger local preprocessing
+	ProcessedPath    string  `json:"processed_path,omitempty"`    // Path to preprocessed edge/pose/depth map
+	PreprocessedHash string  `json:"preprocessed_hash,omitempty"` // Cache key or hash
+}
+
+// RefImage returns ReferenceImage or InputPath if either is set.
+func (c *ControlNetConfig) RefImage() string {
+	if c.ReferenceImage != "" {
+		return c.ReferenceImage
+	}
+	return c.InputPath
+}
 
 // AspectRatio represents the target visual proportion.
 type AspectRatio string
@@ -101,9 +129,11 @@ type ImageSpec struct {
 	ScaleFactor     int            `json:"scale_factor,omitempty"`     // 2, 4, 8 super-resolution scale
 	RestoreFaces    bool           `json:"restore_faces,omitempty"`    // Toggles facial reconstruction
 	FaceFidelity    float64        `json:"face_fidelity,omitempty"`    // [0.0, 1.0] facial fidelity weighting
-	UpscalerModel   string         `json:"upscaler_model,omitempty"`   // Specific upscaler or face model name
-	ExtraParams     map[string]any `json:"extra_params,omitempty"`
-	CreatedAt       time.Time      `json:"created_at"`
+	UpscalerModel   string              `json:"upscaler_model,omitempty"`   // Specific upscaler or face model name
+	LoRAs           []LoRAConfig        `json:"loras,omitempty"`            // LoRA models and scales
+	ControlNets     []ControlNetConfig  `json:"controlnets,omitempty"`      // ControlNet structural conditioning
+	ExtraParams     map[string]any      `json:"extra_params,omitempty"`
+	CreatedAt       time.Time           `json:"created_at"`
 }
 
 // IsImg2Img returns true if the spec describes an image-to-image or style-transfer task.
@@ -125,6 +155,16 @@ func (s *ImageSpec) IsInpaint() bool {
 // IsUpscale returns true if the spec describes an upscaling or face restoration task.
 func (s *ImageSpec) IsUpscale() bool {
 	return s.Mode == ModeUpscale || s.ScaleFactor > 1 || s.RestoreFaces
+}
+
+// HasLoRA returns true if the spec has at least one configured LoRA.
+func (s *ImageSpec) HasLoRA() bool {
+	return len(s.LoRAs) > 0
+}
+
+// HasControlNet returns true if the spec has at least one configured ControlNet.
+func (s *ImageSpec) HasControlNet() bool {
+	return len(s.ControlNets) > 0
 }
 
 // ApplyDefaults applies default values for mode, denoise strength, scale factors, and clamps parameters.
@@ -167,6 +207,35 @@ func (s *ImageSpec) ApplyDefaults() {
 	} else if s.DenoiseStrength > 1.0 {
 		s.DenoiseStrength = 1.0
 	}
+
+	// Apply defaults and clamping to LoRAs
+	for i := range s.LoRAs {
+		if s.LoRAs[i].Scale == 0.0 {
+			s.LoRAs[i].Scale = 1.0
+		}
+		if s.LoRAs[i].Scale > 2.0 {
+			s.LoRAs[i].Scale = 2.0
+		} else if s.LoRAs[i].Scale < 0.0 {
+			s.LoRAs[i].Scale = 0.0
+		}
+	}
+
+	// Apply defaults and clamping to ControlNets
+	for i := range s.ControlNets {
+		if s.ControlNets[i].Strength == 0.0 {
+			s.ControlNets[i].Strength = 1.0
+		}
+		if s.ControlNets[i].Strength > 2.0 {
+			s.ControlNets[i].Strength = 2.0
+		} else if s.ControlNets[i].Strength < 0.0 {
+			s.ControlNets[i].Strength = 0.0
+		}
+		if s.ControlNets[i].ReferenceImage == "" && s.ControlNets[i].InputPath != "" {
+			s.ControlNets[i].ReferenceImage = s.ControlNets[i].InputPath
+		} else if s.ControlNets[i].InputPath == "" && s.ControlNets[i].ReferenceImage != "" {
+			s.ControlNets[i].InputPath = s.ControlNets[i].ReferenceImage
+		}
+	}
 }
 
 // Validate checks internal consistency of the ImageSpec fields.
@@ -177,6 +246,27 @@ func (s *ImageSpec) Validate() error {
 	if s.IsUpscale() {
 		if s.ScaleFactor != 2 && s.ScaleFactor != 4 && s.ScaleFactor != 8 {
 			return fmt.Errorf("unsupported scale factor %d: supported scale factors are 2, 4, and 8", s.ScaleFactor)
+		}
+	}
+
+	validCNTypes := map[string]bool{
+		"canny":    true,
+		"depth":    true,
+		"openpose": true,
+		"lineart":  true,
+		"scribble": true,
+	}
+
+	for _, cn := range s.ControlNets {
+		cnType := strings.ToLower(strings.TrimSpace(cn.Type))
+		if !validCNTypes[cnType] {
+			return fmt.Errorf("unsupported controlnet type %q: supported types are canny, depth, openpose, lineart, scribble", cn.Type)
+		}
+		refImg := cn.RefImage()
+		if refImg != "" && !strings.HasPrefix(refImg, "http://") && !strings.HasPrefix(refImg, "https://") && !strings.HasPrefix(refImg, "data:") {
+			if _, err := os.Stat(refImg); os.IsNotExist(err) {
+				return fmt.Errorf("controlnet reference image does not exist: %s", refImg)
+			}
 		}
 	}
 	return nil

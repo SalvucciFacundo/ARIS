@@ -53,6 +53,8 @@ aris gen "@<subagent> <prompt>" [options]
 | `--model <val>` | `-m` | `flux` | Model name (e.g. `flux`, `flux-realism`, `dall-e-3`, `sd-3.5`) |
 | `--seed <int>` | `-s` | `0` (random) | Seed for reproducible generation |
 | `--negative <str>` | `-n` | `""` | Negative prompt keywords |
+| `--lora <val>` | — | `""` | LoRA weight stacking: `<name>:<scale>` or `<name>` |
+| `--controlnet <val>`| — | `""` | ControlNet structural conditioning: `<type>:<scale>:<path>` or `<type>:<path>` |
 | `--critic` | — | `false` | Run VLM visual critique on output |
 | `--auto-heal` | — | `false` | Automatically retry & refine prompt if critique score is below threshold |
 
@@ -60,6 +62,15 @@ aris gen "@<subagent> <prompt>" [options]
 ```bash
 # Zero-config generation
 aris gen "a cyberpunk cat in neo tokyo" --ratio 16:9
+
+# Inline LoRA tag parsing with scale factor
+aris gen "portrait of an astronaut <lora:space_suit:0.85> <lora:neon_cyber:0.6> in Tokyo"
+
+# CLI flag LoRA weight stacking
+aris gen "cyberpunk warrior" --lora "neon_cyber:0.85" --lora "detail_booster:0.60" --backend comfyui
+
+# ControlNet structural conditioning (Canny edge detection)
+aris gen "cyberpunk neon overhaul" --controlnet "canny:0.85:pose.png" --backend comfyui
 
 # Direct subagent routing
 aris gen "@director cinematic shot of an ancient alien temple in a bioluminescent jungle"
@@ -191,7 +202,58 @@ aris gen "@upscaler please upscale /tmp/portrait.png to 4k with high fidelity fa
 
 ---
 
-## 5. `aris tui` / `aris chat` — Interactive Cyberpunk TUI
+## 5. `aris lora` — LoRA Model Management
+
+Inspects and lists local LoRA weight models installed under `~/.aris/models/loras/`.
+
+### Syntax
+```bash
+aris lora list
+```
+
+### Examples
+```bash
+# List available local LoRA files
+aris lora list
+
+# Use in text-to-image with inline tags or flags
+aris gen "cyberpunk girl <lora:neon_cyber:0.9>" --lora "studio_lighting:0.75"
+```
+
+---
+
+## 6. `aris controlnet` — ControlNet Guidance & Preprocessing
+
+Manages ControlNet structural conditioning types and executes zero-dependency pure-Go image preprocessors (such as Canny edge detection).
+
+### Syntax
+```bash
+aris controlnet types
+aris controlnet preproc <type> <input_image> [--output <output_path>]
+```
+
+### Supported Types
+- `canny`: High-contrast edge detection map (built-in pure-Go preprocessor)
+- `depth`: Monocular 3D depth estimation map
+- `openpose`: Human anatomical keypoints & skeletal pose detection
+- `lineart`: Artistic outline and line-drawing structural conditioning
+- `scribble`: Hand-drawn sketch and contour guidance
+
+### Examples
+```bash
+# List supported types
+aris controlnet types
+
+# Run pure-Go Canny edge detection preprocessor on local image
+aris controlnet preproc canny photo.png --output edges.png
+
+# Generate image conditioned on preprocessed or reference image
+aris gen "portrait of cyber warrior" --controlnet "canny:0.80:edges.png" --backend comfyui
+```
+
+---
+
+## 7. `aris tui` / `aris chat` — Interactive Cyberpunk TUI
 
 Launches a terminal user interface powered by Bubbletea and Lipgloss.
 
