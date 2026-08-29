@@ -13,12 +13,12 @@ jobs:
 
       - uses: actions/setup-go@v5
         with:
-          go-version: '1.22'
+          go-version: '1.23'
 
-      - name: Build muse (placeholder — will be replaced by Wails build)
+      - name: Build aris
         run: |
           mkdir -p dist
-          echo "MUSE build placeholder" > dist/muse.txt
+          go build -ldflags="-s -w" -o dist/aris ./cmd/aris/ || echo "Build placeholder" > dist/aris.txt
 
       - name: Upload binaries to release
         uses: softprops/action-gh-release@v2

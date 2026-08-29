@@ -1,288 +1,421 @@
-# MUSE — Motor Unificado de Síntesis Multimodal
-
-## Spec de Proyecto (SDD Phase: Proposal + Design)
-
-> **Versión:** 0.1-draft
-> **Fecha:** 2026-08-07
-> **Autor:** Facundo + ARIA
-> **Nombre:** MUSE — Multimodal Unified Synthesis Engine (la musa / meditar)
+# ARIS: Autonomous Reasoner for Image System
+## Technical Specification & Architecture Design (v1.0)
 
 ---
 
-## 1. Visión
+## 1. Executive Summary & Vision
 
-Un agente de chat autónomo, con memoria y skills (inspirado en GAIA), que convierte
-descripciones en lenguaje natural en **imágenes de alta calidad**, generando
-automáticamente el prompt técnico completo (positivo, negativo, modelo, sampler,
-steps, CFG, seed) y delegando la generación al backend más adecuado.
+**ARIS (Autonomous Reasoner for Image System)** is an autonomous, AI-driven visual generation agent built in **pure Go**.
 
-```
-Usuario: "quiero una imagen de un perro saltando en la luna"
-Agente:  [analiza → genera prompt técnico → llama backend → entrega imagen]
-         + aprende preferencias del usuario con cada uso
-```
+Unlike naive prompt wrappers or rigid GUI frontends, ARIS behaves as an **Art Director + Autonomous Engineer**:
+1. **Understands Intent**: Analyzes vague or complex user descriptions in natural language.
+2. **Consults Memory**: Recalls user aesthetic preferences, character/style consistency, camera setups, and negative defaults from a persistent SQLite Knowledge Graph (inherited from the GAIA architecture).
+3. **Engineers Prompts & Parameters**: Deconstructs requests into model-specific positive prompts, negative triggers, lighting/composition parameters, aspect ratios, seeds, and samplers (optimized for Flux, SDXL, or DALL-E).
+4. **Executes Image Synthesis**: Dispatches jobs across interchangeable local (ComfyUI/Diffusers) and cloud (Pollinations, Fal.ai, Replicate, OpenAI) image backends.
+5. **Evaluates & Self-Corrects (VLM Critic Loop)**: Optionally inspects rendered outputs with a Vision Language Model to verify constraint satisfaction (e.g., correct anatomy, element count, lighting match) before final delivery.
+6. **Iterative Refinement & Img2Img**: Supports conversational image editing ("make it darker", "remove the helmet", or inputting a reference image).
+7. **Learns & Retains**: Records successful prompt recipes, style discoveries, and user feedback back into the Knowledge Graph.
 
-## 2. Objetivos
+---
 
-- **Principal:** Que el usuario describa una imagen en lenguaje natural y reciba la imagen generada.
-- **Secundario:** Que el agente genere prompts técnicos de calidad sin que el usuario sepa de SD/ComfyUI.
-- **Diferenciador:** Memoria persistente — el agente recuerda estilos, temas y correcciones del usuario.
-- **Extensible:** Backend intercambiable (Pollinations gratis → ComfyUI local → API paga).
+## 2. Core Architecture: Hexagonal (Ports & Adapters)
 
-## 3. No-Objetivos (fuera de alcance para MVP)
-
-- ❌ No UI web completa (arranca por terminal/Telegram)
-- ❌ No edición/outpainting/inpainting (fase 2)
-- ❌ No entrenamiento de modelos propios
-- ❌ No generación de video
-
-## 4. Arquitectura
+ARIS follows strict Hexagonal Architecture principles in Go to guarantee zero vendor lock-in, high testability, and single-binary deployment.
 
 ```
-┌──────────────────────────────────────────────────────┐
-│                 MUSE (Desktop App)                   │
-│                                                      │
-│  ┌──────────────────────────────────────────────┐   │
-│  │  UI — Wails (Go + HTML/CSS/JS vanilla)       │   │
-│  │  • chat lateral (como ChatGPT)              │   │
-│  │  • canvas de imagen (generada / subida)     │   │
-│  │  • drag & drop para subir imagen            │   │
-│  │  • sliders: steps, CFG, seed, modelo        │   │
-│  │  • galería de historial                     │   │
-│  └───────────┬──────────────────────────────────┘   │
-│              │ (binding Go ↔ JS)                     │
-│  ┌───────────▼────────────┐  ┌───────────────────┐  │
-│  │  ORCHESTRATOR          │  │  MEMORY           │  │
-│  │  • interpreta pedidos  │  │  • preferencias   │  │
-│  │  • decide qué generar  │  │  • historial      │  │
-│  │  • itera con el user   │  └───────────────────┘  │
-│  └───────────┬────────────┘                         │
-│              │                                       │
-│  ┌───────────▼──────────────────────────┐           │
-│  │  PROMPT ENGINE (LLM-powered)        │           │
-│  │  • entiende el pedido en natural    │           │
-│  │  • genera prompt positivo/negativo  │           │
-│  │  • elige modelo/params              │           │
-│  │  • multi-provider LLM:              │           │
-│  │    OpenAI · Anthropic · Ollama      │           │
-│  └───────────┬──────────────────────────┘           │
-│              │                                       │
-│  ┌───────────▼────────────┐                         │
-│  │  IMAGE BACKEND (adapter)│                        │
-│  │  • Pollinations (free) │                         │
-│  │  • ComfyUI local       │                         │
-│  │  • Stability/OpenAI API│                         │
-│  └────────────────────────┘                         │
-│                                                      │
-│  GATEWAYS (fase 2, opcionales): Telegram | Discord  │
-│  — el mismo core, otra capa de entrada               │
-└──────────────────────────────────────────────────────┘
++-------------------------------------------------------------------------------+
+|                                  ARIS CORE                                    |
+|                                                                               |
+|   +-----------------------------------------------------------------------+   |
+|   |                        ORCHESTRATOR / AGENT                           |   |
+|   |  • ReAct Loop: Reason -> Plan -> Query Memory -> Synthesize -> Critic |   |
+|   |  • Style Decomposer & Prompt Architect (Text2Img & Img2Img)           |   |
+|   |  • Context Compactor & Memory Nudge                                   |   |
+|   +-----------------------------------+-----------------------------------+   |
+|                                       |                                       |
+|   +-----------------------------------v-----------------------------------+   |
+|   |                             PORTS                                     |   |
+|   |  +-------------------+  +-------------------+  +-------------------+  |   |
+|   |  |   LLMProvider     |  |   ImageBackend    |  |    VisionCritic   |  |   |
+|   |  +-------------------+  +-------------------+  +-------------------+  |   |
+|   |  +-------------------+  +-------------------+  +-------------------+  |   |
+|   |  |  KnowledgeGraph   |  |    HistoryStore   |  |     UIPresenter   |  |   |
+|   |  +-------------------+  +-------------------+  +-------------------+  |   |
+|   +-----------------------------------+-----------------------------------+   |
++---------------------------------------|---------------------------------------+
+                                        |
++---------------------------------------v---------------------------------------+
+|                                ADAPTERS                                       |
+|                                                                               |
+|  [LLM]           OpenAI, Anthropic, Ollama, DeepSeek, OpenRouter, Groq        |
+|  [Image Backend] Pollinations (Default/Free), ComfyUI (Local), Fal.ai,        |
+|                  Replicate, OpenAI DALL-E, HuggingFace                       |
+|  [Vision Critic] Ollama (Qwen2.5-VL/Granite-Vision), OpenAI/Claude Vision     |
+|  [Storage/KG]    SQLite3 + FTS5 Full-Text Search (GAIA 3-Scope Model)         |
+|  [Presentation]  • Cyberpunk TUI (Bubbletea + Kitty/Sixel/iTerm2 protocol)    |
+|                  • Desktop GUI (Wails v2 + TailwindCSS + Vanilla JS)          |
+|                  • CLI Headless Mode (`aris gen "..."`)                       |
+|                  • Gateways: Telegram & Discord Bot adapters                  |
++-------------------------------------------------------------------------------+
 ```
 
-**Dos cerebros separados e intercambiables:**
-- **LLM (razonamiento):** entiende lo que pedís y arma los prompts. Usa el proveedor que tengas configurado (OpenAI, Anthropic, Ollama local — el mismo patrón multi-provider de GAIA).
-- **Image Backend (generación):** crea la imagen. Proveedor intercambiable: Pollinations gratis (default), ComfyUI local, o API paga (Stability/OpenAI/Replicate).
+---
 
-## 5. Stack Tecnológico
+## 3. The Autonomous Generation & Reasoning Lifecycle
 
-| Capa | Tecnología | Justificación |
-|---|---|---|
-| Lenguaje | **Go 1.22+** | Mismo stack que GAIA, binario único |
-| UI Desktop | **Wails v2** (Go + HTML/CSS/JS) | 35.7K stars, activo, cross-platform |
-| Frontend | **Vanilla HTML + Tailwind + JS** | Sin framework — menos piezas, más liviano |
-| LLM (razonamiento) | **Multi-provider** (OpenAI, Anthropic, Ollama) | Entiende pedidos y arma prompts — como GAIA |
-| Memoria | SQLite (modernc.org/sqlite) + JSON | Cero deps externas, persistente |
-| Image Backend 1 | **Pollinations.ai API** (gratis, sin key) | VERIFICADO: 512x512 en ~1s |
-| Image Backend 2 | ComfyUI local | Sin costo, para usuarios con GPU |
-| Image Backend 3 | Stability / OpenAI / Replicate API | Pago, alta calidad |
-| Gateways | Telegram/Discord (fase 2) | El mismo core, otra capa de entrada |
-| Config | YAML/TOML + env | Multi-provider LLM como GAIA |
-
-## 6. API de Pollinations (verificada hoy)
+Every user request undergoes a 5-stage autonomous lifecycle:
 
 ```
-GET https://image.pollinations.ai/prompt/{prompt}?width=512&height=512&seed=42&nologo=true&model=flux
+[User Input (Text / Image)]
+           │
+           ▼
+1. REASON & RECALL ──► Query Knowledge Graph (User style, artist facts, negative rules)
+           │
+           ▼
+2. PROMPT ARCHITECT ─► Deconstruct into Positive, Negative, Aspect Ratio, Seed, CFG
+           │
+           ▼
+3. DISPATCH & RENDER ─► Invoke Image Backend (Pollinations / ComfyUI / Fal.ai / Replicate)
+           │
+           ▼
+4. VLM EVALUATION ───► (Optional) Vision Critic verifies constraints -> Pass or Refine Loop
+           │
+           ▼
+5. PERSIST & LEARN ──► Save Image, Metadata, Generation Recipe, and new Facts to SQLite
+           │
+           ▼
+[Deliver Result + Display Preview / Stream to UI / Gateway]
 ```
 
-| Parámetro | Valores | Uso |
-|---|---|---|
-| `prompt` | texto URL-encoded | Prompt positivo |
-| `width/height` | 256-1024+ | Resolución |
-| `seed` | int | Reproducibilidad |
-| `nologo` | true/false | Quitar watermark |
-| `model` | flux, turbo, etc. | Modelo de generación |
-| `negative` | texto (verificar) | Prompt negativo |
+### 3.1. Stage 1: Reason & Recall
+- Search SQLite Knowledge Graph using FTS5 for topics related to the user prompt (e.g. style tokens like `cyberpunk`, `watercolor`, user preferences like `always use 16:9 for landscapes`, negative defaults like `no text, no watermark`).
+- Inject recalled facts into the system context.
 
-**Resultado verificado:** HTTP 200, JPEG real, 512x512 en 1.0-1.9s, sin API key.
+### 3.2. Stage 2: Prompt Architect
+- LLM acts as an expert Art Director.
+- Maps raw concepts to model-specific syntax (e.g. Flux natural language vs. SDXL comma-separated weight tags `(masterpiece:1.2), volumetric lighting, 8k octane render`).
+- Computes resolution, aspect ratio (1:1, 16:9, 9:16, 4:5), sampling steps, guidance scale (CFG), and seed.
+- Handles conversational iterations (e.g. "make it darker", "remove the helmet") by modifying prompt deltas and maintaining seed or setting a new one.
 
-## 7. Flujo de Usuario (MVP)
+### 3.3. Stage 3: Dispatch & Render
+- Calls the active `ImageBackend`.
+- **Default Out-of-the-Box**: Pollinations API (`image.pollinations.ai`) — Zero configuration, free, fast (~1-2s).
+- **Local Powerhouse**: ComfyUI API via WebSocket / REST for users with local GPUs.
+- **Managed APIs**: Fal.ai, Replicate, OpenAI DALL-E 3 for production quality.
+- Downloads the resulting asset to local cache (`~/.aris/outputs/YYYY-MM-DD/`).
+
+### 3.4. Stage 4: VLM Evaluation & Critic (Self-Correction Loop)
+- If enabled, the generated image is sent to a Vision model (`VisionCritic`).
+- Evaluates against the prompt:
+  - Are all requested subjects present?
+  - Are there visible artifacts or style mismatches?
+- If score < threshold, agent adjusts the prompt/seed and initiates a single targeted correction attempt.
+
+### 3.5. Stage 5: Persist & Learn
+- Persists image path, raw seed, final prompt, and render duration to `generations` table.
+- If the user provides positive or corrective feedback, ARIS extracts a new `KnowledgeFact` and saves it to SQLite.
+
+---
+
+## 4. GAIA-Inherited Memory System (SQLite Knowledge Graph)
+
+ARIS adopts GAIA's 3-scope memory model adapted for visual synthesis:
+
+### 4.1. The Three Scopes
+1. **User Scope (`scope: "user"`)**:
+   - Universal preferences: favorite aspect ratios, default color tones, negative triggers (e.g. "never add text watermark", "prefers cinematic 35mm film grain").
+2. **Style Scope (`scope: "style"`)**:
+   - Curated artist recipes, lighting presets, rendering engine prompts, camera focal lengths, and model-specific nuances (e.g., "Flux.1 handles text in quotes natively without trigger words").
+3. **Session / Project Scope (`scope: "project"`)**:
+   - Character sheets, visual consistency tokens, seed references, palette locks for a specific image series or campaign.
+
+### 4.2. Database Schema (`internal/adapters/db/schema.sql`)
+
+```sql
+-- Knowledge Graph Facts Table
+CREATE TABLE IF NOT EXISTS knowledge_facts (
+    id TEXT PRIMARY KEY,
+    topic TEXT NOT NULL,          -- e.g. "style:cyberpunk", "artist:moebius", "pref:aspect_ratio"
+    concept TEXT NOT NULL,        -- e.g. "lighting", "negative_prompt", "seed_stability"
+    fact TEXT NOT NULL,           -- e.g. "Use volumetric neon fog with teal and orange chromatic aberration"
+    source_agent TEXT NOT NULL,   -- "aris:reasoner", "user:feedback", "critic:vlm"
+    labels TEXT NOT NULL,         -- JSON array: ["cyberpunk", "lighting", "neon"]
+    created_at DATETIME NOT NULL,
+    project TEXT DEFAULT '',      -- project / collection name
+    scope TEXT NOT NULL           -- "user", "style", "project"
+);
+
+-- Full-Text Search (FTS5) for fast semantic keyword matching
+CREATE VIRTUAL TABLE IF NOT EXISTS knowledge_facts_fts USING fts5(
+    topic,
+    concept,
+    fact,
+    labels,
+    content='knowledge_facts',
+    content_rowid='rowid'
+);
+
+-- Generation History Table
+CREATE TABLE IF NOT EXISTS generations (
+    id TEXT PRIMARY KEY,
+    prompt_raw TEXT NOT NULL,
+    prompt_enhanced TEXT NOT NULL,
+    negative_prompt TEXT,
+    backend TEXT NOT NULL,
+    model TEXT NOT NULL,
+    width INTEGER NOT NULL,
+    height INTEGER NOT NULL,
+    steps INTEGER,
+    cfg_scale REAL,
+    seed INT64,
+    image_path TEXT NOT NULL,
+    thumb_path TEXT,
+    duration_ms INTEGER,
+    rating INTEGER DEFAULT 0,     -- -1 (thumbs down), 0 (neutral), 1 (thumbs up)
+    feedback TEXT,
+    created_at DATETIME NOT NULL
+);
+```
+
+---
+
+## 5. Domain Models & Port Interfaces in Go
+
+### 5.1. Domain Models (`internal/core/domain/`)
+
+```go
+package domain
+
+import (
+	"time"
+)
+
+type AspectRatio string
+
+const (
+	RatioSquare    AspectRatio = "1:1"   // 1024x1024
+	RatioLandscape AspectRatio = "16:9"  // 1344x768
+	RatioPortrait  AspectRatio = "9:16"  // 768x1344
+	RatioPhoto     AspectRatio = "4:3"   // 1152x864
+	RatioPoster    AspectRatio = "3:4"   // 864x1152
+)
+
+type ImageSpec struct {
+	ID             string            `json:"id"`
+	RawPrompt      string            `json:"raw_prompt"`
+	EnhancedPrompt string            `json:"enhanced_prompt"`
+	NegativePrompt string            `json:"negative_prompt"`
+	AspectRatio    AspectRatio       `json:"aspect_ratio"`
+	Width          int               `json:"width"`
+	Height         int               `json:"height"`
+	Steps          int               `json:"steps"`
+	CFGScale       float64           `json:"cfg_scale"`
+	Seed           int64             `json:"seed"`
+	Backend        string            `json:"backend"`
+	Model          string            `json:"model"`
+	InputImagePath string            `json:"input_image_path,omitempty"` // For img2img
+	ExtraParams    map[string]any    `json:"extra_params"`
+	CreatedAt      time.Time         `json:"created_at"`
+}
+
+type ImageResult struct {
+	ID           string        `json:"id"`
+	SpecID       string        `json:"spec_id"`
+	LocalPath    string        `json:"local_path"`
+	RemoteURL    string        `json:"remote_url,omitempty"`
+	Format       string        `json:"format"` // png, webp, jpg
+	SizeInBytes  int64         `json:"size_in_bytes"`
+	Duration     time.Duration `json:"duration"`
+	Metadata     map[string]any `json:"metadata"`
+}
+
+type KnowledgeFact struct {
+	ID          string    `json:"id"`
+	Topic       string    `json:"topic"`
+	Concept     string    `json:"concept"`
+	Fact        string    `json:"fact"`
+	SourceAgent string    `json:"source_agent"`
+	Labels      []string  `json:"labels"`
+	Project     string    `json:"project"`
+	Scope       string    `json:"scope"` // "user", "style", "project"
+	CreatedAt   time.Time `json:"created_at"`
+}
+```
+
+### 5.2. Core Ports (`internal/core/ports/`)
+
+```go
+package ports
+
+import (
+	"context"
+	"aris/internal/core/domain"
+)
+
+// LLMProvider generates reasoning, prompt engineering, and parameter selection.
+type LLMProvider interface {
+	Name() string
+	Complete(ctx context.Context, systemPrompt, userPrompt string) (string, error)
+	ReasonPrompt(ctx context.Context, input string, facts []domain.KnowledgeFact) (*domain.ImageSpec, error)
+}
+
+// ImageBackend handles actual image rendering.
+type ImageBackend interface {
+	Name() string
+	SupportsModels() []string
+	Generate(ctx context.Context, spec *domain.ImageSpec) (*domain.ImageResult, error)
+}
+
+// VisionCritic evaluates generated images against quality and prompt constraints.
+type VisionCritic interface {
+	Evaluate(ctx context.Context, imagePath string, spec *domain.ImageSpec) (score float64, critique string, err error)
+}
+
+// KnowledgeGraphStore handles persistent 3-scope memory and full-text search.
+type KnowledgeGraphStore interface {
+	AddFact(ctx context.Context, fact domain.KnowledgeFact) (string, error)
+	SearchFacts(ctx context.Context, query string, scope string, limit int) ([]domain.KnowledgeFact, error)
+	GetFactsByTopic(ctx context.Context, topic string) ([]domain.KnowledgeFact, error)
+	DeleteFact(ctx context.Context, id string) error
+}
+
+// HistoryStore records generation runs, specs, outputs, and ratings.
+type HistoryStore interface {
+	SaveGeneration(ctx context.Context, spec *domain.ImageSpec, result *domain.ImageResult) error
+	UpdateRating(ctx context.Context, id string, rating int, feedback string) error
+	GetHistory(ctx context.Context, limit, offset int) ([]domain.ImageResult, error)
+}
+```
+
+---
+
+## 6. Image Generation Backends (The Muscle)
+
+ARIS supports multiple interchangeable backends via the `ImageBackend` interface:
+
+| Backend | Type | Default Model | Cost / Auth | Notes |
+|---|---|---|---|---|
+| **Pollinations** | Free HTTP API | `flux`, `turbo` | Zero-Config, Free | Default out-of-the-box backend with no API keys required. |
+| **ComfyUI** | Local HTTP/WS | Custom (SDXL / Flux) | Local Hardware | Connects to local ComfyUI instance with custom workflow JSONs. |
+| **Fal.ai** | Managed Cloud API | `flux-pro`, `flux-realism` | API Key | Ultra-fast enterprise cloud rendering. |
+| **Replicate** | Managed Cloud API | `black-forest-labs/flux-schnell` | API Key | Diverse community models. |
+| **OpenAI** | Managed Cloud API | `dall-e-3` | API Key | High prompt coherence. |
+| **HuggingFace**| Cloud / Local | `stable-diffusion-3.5` | Optional Token | HF Inference API integration. |
+
+### Pollinations Endpoint Specification:
+```
+GET https://image.pollinations.ai/prompt/{prompt}?width={w}&height={h}&seed={seed}&nologo=true&model={model}&negative={negative}
+```
+
+---
+
+## 7. Package Layout in Go
 
 ```
-$ muse
-🧠 MUSE: Hola! Decime qué imagen querés crear.
-Tú> un perro saltando en la luna
-🧠 MUSE: [pensando...] Genero con modelo flux, 512x512.
-   Prompt: "a happy dog jumping high on the moon surface, earth visible in the background,
-            astronaut helmet, stars, cinematic lighting, ultra detailed"
-   Negativo: "blurry, low quality, distorted, extra limbs, watermark"
-   ✓ Imagen guardada en ./output/perro_luna_001.png
-   ¿Te gusta? (sí / más oscura / sin el casco / etc.)
-Tú> más oscura y sin casco
-🧠 MUSE: [recuerda tu preferencia: "sin casco", "fondo oscuro"]
-   ✓ Imagen regenerada con seed nuevo
-```
-
-## 8. Requisitos Funcionales (MVP)
-
-### RF-1: Chat conversacional
-- [ ] El usuario escribe una descripción en lenguaje natural
-- [ ] El agente responde en el mismo idioma del usuario (ES/EN)
-- [ ] Soporta aclaraciones iterativas ("más oscura", "sin el perro")
-
-### RF-2: Prompt Engine (LLM-powered)
-- [ ] Convierte la descripción del usuario en prompt positivo detallado en inglés
-- [ ] Genera prompt negativo automático (calidad, artefactos, anatomía)
-- [ ] Elige parámetros: modelo de imagen, width/height, seed — según el pedido y las preferencias
-- [ ] Multi-provider LLM: funciona con OpenAI, Anthropic u Ollama local (configurable)
-- [ ] Expone los prompts al usuario para que los vea/edite
-
-### RF-3: Generación
-- [ ] Llama a Pollinations con los parámetros
-- [ ] Guarda la imagen en `./output/YYYYMMDD_HHMMSS_desc.png`
-- [ ] Muestra preview (terminal: ruta + tamaño; Telegram: imagen directa)
-
-### RF-4: Memoria
-- [ ] Guarda preferencias de estilo del usuario (historial de correcciones)
-- [ ] Incorpora preferencias al prompt en generaciones futuras
-- [ ] Historial de imágenes generadas (prompt + seed + params)
-
-### RF-5: Iteración
-- [ ] El usuario puede pedir cambios ("más oscura") → se regenera
-- [ ] El seed cambia en cada iteración salvo que el usuario pida lo mismo
-
-## 9. Requisitos No-Funcionales
-
-- **Rendimiento:** < 5s por imagen (Pollinations), < 1s para el análisis del prompt
-- **Portabilidad:** binario único, funciona en Linux/macOS/Windows
-- **Offline-friendly:** el agente funciona sin GPU; solo requiere internet para Pollinations
-- **Seguridad:** no ejecuta prompts como shell; sanitiza entrada
-- **Config:** via archivo de config (modelo default, backend default, carpeta output)
-
-## 10. Estructura de Archivos Propuesta
-
-```
-muse/
-├── go.mod
-├── README.md
+aris/
 ├── cmd/
-│   └── muse/
-│       └── main.go              # entrypoint Wails app
+│   └── aris/
+│       └── main.go                 # Application entrypoint & CLI dispatcher
 ├── internal/
-│   ├── agent/
-│   │   ├── orchestrator.go      # loop principal, interpreta pedidos
-│   │   └── conversation.go      # estado de conversación
-│   ├── prompt/
-│   │   ├── engine.go            # descripción → prompt positivo/negativo
-│   │   ├── engine_test.go
-│   │   └── params.go            # modelo, steps, cfg, seed
-│   ├── backend/
-│   │   ├── backend.go           # interfaz Backend
-│   │   ├── pollinations.go      # adapter Pollinations
-│   │   └── pollinations_test.go
-│   ├── memory/
-│   │   ├── store.go             # SQLite/JSON persistente
-│   │   └── preferences.go       # preferencias de usuario
-│   └── ui/
-│       ├── app.go               # Wails bindings (métodos expuestos a JS)
-│       └── frontend/            # Svelte/React + Tailwind
-│           ├── src/App.svelte   # chat lateral + canvas + galería
-│           └── src/...          
-├── output/                      # imágenes generadas (gitignore)
-└── config.yaml                  # modelo default, backend, etc.
+│   ├── core/
+│   │   ├── domain/                 # Core entities (ImageSpec, ImageResult, KnowledgeFact)
+│   │   ├── ports/                  # Interface contracts (LLM, Backend, Memory, Critic)
+│   │   └── services/               # Core business logic & autonomous reasoner loop
+│   │       ├── agent.go            # Master ARIS agent loop
+│   │       ├── prompt_architect.go # Art Director & Prompt decomposition
+│   │       ├── critic_service.go   # VLM Evaluation & Refinement loop
+│   │       └── memory_service.go   # Fact indexing & recall orchestration
+│   ├── adapters/
+│   │   ├── llm/                    # OpenAI, Anthropic, Ollama, DeepSeek adapters
+│   │   │   ├── client.go
+│   │   │   ├── openai.go
+│   │   │   └── ollama.go
+│   │   ├── image/                  # Image generation adapters
+│   │   │   ├── pollinations.go     # Zero-config default backend
+│   │   │   ├── comfyui.go          # Local ComfyUI websocket/REST adapter
+│   │   │   ├── falai.go            # Fal.ai cloud adapter
+│   │   │   └── replicate.go        # Replicate cloud adapter
+│   │   ├── vision/                 # Vision critique adapters (Qwen-VL, GPT-4o-vision)
+│   │   │   └── vision_critic.go
+│   │   ├── db/                     # SQLite Knowledge Graph & History
+│   │   │   ├── sqlite.go           # DB connection & migrations
+│   │   │   ├── knowledge.go        # GAIA-based Knowledge Graph implementation
+│   │   │   └── history.go          # Generation logs
+│   │   ├── ui/                     # Presentation layers
+│   │   │   ├── cli/                # Terminal commands (aris gen "...", aris memory, etc.)
+│   │   │   ├── tui/                # Interactive Bubbletea TUI with terminal image preview
+│   │   │   └── wails/              # Wails v2 Desktop App bindings (Go <-> JS)
+│   │   └── gateway/                # Optional gateways
+│   │       ├── telegram/           # Telegram Bot adapter
+│   │       └── discord/            # Discord Bot adapter
+│   └── config/
+│       └── config.go               # YAML / Env configuration loader (~/.aris/config.yaml)
+├── pkg/
+│   └── imgutil/                    # Image format conversion, thumbnailing, terminal protocols
+├── frontend/                       # Optional Wails Desktop App UI (Tailwind + Vanilla JS/Svelte)
+├── go.mod
+├── go.sum
+└── SPEC.md
 ```
 
-**UI Desktop (Wails) — pantalla principal:**
-- **Lateral izquierdo:** historial de conversaciones + galería de imágenes
-- **Centro:** canvas de la imagen (generada o subida con drag & drop)
-- **Derecha:** chat con MUSE (como ChatGPT) + panel de parámetros (sliders: steps, CFG, seed, modelo) + botón "Generar"
+---
 
-## 11. Plan de Implementación (TDD, tareas 2-5 min)
+## 8. User Interfaces & Gateways
 
-### Tarea 1: Setup del proyecto
-- [ ] `go mod init muse`, estructura de carpetas
-- [ ] Instalar Wails CLI (`go install github.com/wailsapp/wails/v2/cmd/wails@latest`)
-- [ ] `wails init` con template Svelte/React + Tailwind
-- [ ] Config básica (config.yaml + loader)
+### 8.1. CLI Headless Mode
+```bash
+# Quick single generation (uses default Pollinations or configured backend)
+aris gen "a cyberpunk samurai cat in neo-tokyo, raining, cinematic lighting" --ratio 16:9
 
-### Tarea 2: Backend Pollinations (TDD)
-- [ ] Test: `TestBuildPromptURL` — prompt + params → URL correcta
-- [ ] Test: `TestFetchImage` — HTTP 200 y JPEG válido (mock del server)
-- [ ] Implementar `pollinations.go` (GET a image.pollinations.ai, guarda archivo)
+# Interactive session with continuous chat, memory recall, and iterative refinement
+aris chat
 
-### Tarea 3: Prompt Engine con LLM (TDD)
-- [ ] Test: `TestLLMProviderInterface` — interfaz Provider con `Complete(prompt) → string`
-- [ ] Test: `TestBuildPositivePrompt` — dado el pedido del usuario, arma prompt en inglés (mock del LLM)
-- [ ] Test: `TestBuildNegativePrompt` — siempre incluye artefactos básicos + lo que el LLM agregue
-- [ ] Test: `TestPickParams` — defaults correctos (flux, 512, seed random)
-- [ ] Implementar `engine.go`: llama al LLM con un system prompt de "prompt engineer de imágenes" y parsea la respuesta (JSON: prompt, negative, model, params)
-- [ ] Implementar providers: `openai.go`, `anthropic.go`, `ollama.go` (interfaz común, como GAIA)
+# Manage Knowledge Graph memory
+aris memory list --scope style
+aris memory add --topic "style:anime" --concept "palette" --fact "Vibrant saturated pastel colors with clean lineart"
 
-### Tarea 4: Memoria (TDD)
-- [ ] Test: `TestSaveLoadPreferences` — persiste y recarga
-- [ ] Test: `TestApplyPreferencesToPrompt` — las preferencias modifican el prompt
-- [ ] Implementar `store.go` + `preferences.go` (JSON file, simple)
+# Inspect & browse past generations
+aris history --limit 10
+```
 
-### Tarea 5: Orquestador (TDD)
-- [ ] Test: `TestInterpretRequest` — detecta "generar", "cambiar", "salir"
-- [ ] Test: `TestIterationFlow` — "más oscura" regenera con nuevo prompt
-- [ ] Test: `TestEditImageRequest` — detecta "modificar esta imagen" (img2img)
-- [ ] Implementar `orchestrator.go` (loop simple: leer → interpretar → generar → guardar → responder)
+### 8.2. Interactive TUI (Bubbletea + Lipgloss)
+- Split screen: Chat & reasoning stream on the left, rendered image metadata & preview on the right.
+- Supports native terminal graphic protocols (**Kitty Graphics Protocol**, **Sixel**, and **iTerm2 inline images**).
+- Fallback to automatic OS image viewer (`xdg-open`, `open`, or Windows default viewer) when graphics protocols are unavailable.
 
-### Tarea 6: Wails bindings (Go ↔ JS)
-- [ ] `app.go` con métodos expuestos: `GenerateImage`, `EditImage`, `GetHistory`, `SavePreferences`
-- [ ] Test de bindings (los métodos llaman al core y devuelven resultados)
+### 8.3. Desktop UI (Wails v2)
+- 3-Panel Layout:
+  - **Left**: Conversation history & image gallery.
+  - **Center**: High-res Image Canvas with drag & drop support for img2img reference inputs.
+  - **Right**: Chat with ARIS, prompt inspector, parameter sliders (Steps, CFG, Seed, Model).
 
-### Tarea 7: Frontend desktop (UI)
-- [ ] Layout 3 paneles: historial | canvas | chat+params
-- [ ] Chat funcional: escribir descripción → MUSE responde → imagen aparece en canvas
-- [ ] Panel de parámetros: sliders steps/CFG/seed, selector de modelo, botón Generar
-- [ ] **Drag & drop**: subir imagen → aparece en canvas → botón "Modificar" la envía al backend (img2img vía Pollinations)
-- [ ] Galería: historial de imágenes + clic para volver a verla
-- [ ] Dark premium: gradientes teal→emerald, glassmorphism, fondo #08080c (tu estilo)
+### 8.4. Gateways (Telegram / Discord)
+- Receive image generation requests via Telegram/Discord bots and reply with rendered image attachments in real time.
 
-### Tarea 8: Gateways (fase 2, opcional)
-- [ ] Bot de Telegram que recibe "imagen de X" y responde con la imagen
-- [ ] Bot de Discord (mismo core, otro adapter)
+---
 
-### Tarea 9: Pulido y release
-- [ ] README con ejemplos y capturas
-- [ ] Tests completos pasando
-- [ ] Release v0.1.0 (binarios Windows/macOS/Linux vía Wails)
+## 9. Implementation Roadmap
 
-## 12. Verificación / Aceptación
+### Phase 1: Foundations & MVP (The "Instant" Pipeline)
+- [ ] Setup Hexagonal architecture structure (`internal/core`, `internal/adapters`).
+- [ ] Implement SQLite Knowledge Graph with FTS5 search (porting GAIA's `knowledge.go`).
+- [ ] Implement LLM Adapter (Ollama + OpenAI/OpenRouter compatible).
+- [ ] Implement `Pollinations` Image Backend (zero-config, free image generation).
+- [ ] Build basic CLI `aris gen "<prompt>"` that executes: `Reason -> Prompt -> Render -> Save to Disk`.
 
-1. `go test ./...` → todo verde
-2. E2E: `echo "un perro saltando en la luna" | muse` → genera imagen en output/
-3. E2E Telegram: enviar "imagen de gato astronauta" → responde con imagen
-4. Memoria: pedir "más oscuro" dos veces → tercera generación ya sale oscura por defecto
+### Phase 2: Autonomous Reasoner & Memory Learning
+- [ ] Build `PromptArchitect` service with structured JSON output parsing for positive/negative prompts and model parameters.
+- [ ] Implement automated style recall and memory extraction from user prompts.
+- [ ] Add `aris memory` command suite (add, search, list, prune facts).
+- [ ] Add support for `Fal.ai` and `ComfyUI` backends.
 
-## 13. Riesgos y Decisiones Abiertas
+### Phase 3: Vision Critic & Self-Healing Loop
+- [ ] Implement `VisionCritic` port with local Ollama VLM (Qwen2.5-VL) and Cloud Vision.
+- [ ] Add threshold-based automated refinement loop (re-roll with adjusted prompt/seed if critical flaw detected).
+- [ ] Add interactive rating system (`aris rate <id> +1 / -1 --feedback "..."`).
 
-| Riesgo | Mitigación |
-|---|---|
-| Pollinations cambia/limita la API gratis | Adapter intercambiable; fase 2 ComfyUI local |
-| Calidad de imagen variable | Modelo flux por default; exponer parámetros |
-| Prompt sin LLM = limitado | Fase 2: conectar LLM (Ollama local o API) para prompts ricos |
-| ARM64 sin GPU | Pollinations es cloud — no afecta; ComfyUI local sería lento (fase 2 opcional) |
-
-**Decisiones pendientes (para Facundo):**
-1. ¿Nombre final del proyecto? (IMAGEN / muse / otro)
-2. ¿MVP por terminal (TUI) o ya con Telegram?
-3. ¿Prompt Engine con heurística primero (sin LLM) o directamente con LLM local/API?
-4. ¿Backend default: Pollinations gratis confirmado?
-
-## 14. Roadmap
-
-- **MVP (semana 1):** Tareas 1-6 → terminal, Pollinations, memoria básica, iteración
-- **Fase 2 (semana 2):** Telegram, LLM para prompts ricos, ComfyUI local opcional
-- **Fase 3:** Web UI, inpainting/outpainting, modelos múltiples
+### Phase 4: Interactive TUI, Wails Desktop & Gateways
+- [ ] Implement Bubbletea TUI with streaming reasoning, parameter knobs, and inline image preview.
+- [ ] Implement Wails v2 Desktop App with drag-and-drop canvas.
+- [ ] Add Telegram & Discord bot gateways.
+- [ ] Package into single standalone binary for Linux, macOS, and Windows.
