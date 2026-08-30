@@ -17,6 +17,7 @@ import (
 
 	imgadapter "aris/internal/adapters/image"
 	"aris/internal/core/domain"
+	"aris/pkg/imgutil"
 )
 
 func TestRegistry_RegisterAndRetrieve(t *testing.T) {
@@ -702,4 +703,81 @@ func TestFalAIBackend_LoRAAndControlNetPayload(t *testing.T) {
 		t.Errorf("expected controlnet_type canny, got %v", cnetMap["controlnet_type"])
 	}
 }
+
+func TestComfyUIBackend_EmbedsPromptAndWorkflowMetadata(t *testing.T) {
+	tmpDir := t.TempDir()
+
+	img := image.NewRGBA(image.Rect(0, 0, 4, 4))
+	img.Set(0, 0, color.RGBA{R: 255, G: 100, B: 50, A: 255})
+	var rawPngBuf bytes.Buffer
+	_ = png.Encode(&rawPngBuf, img)
+
+	comfyServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case r.URL.Path == "/prompt" && r.Method == http.MethodPost:
+			resp := map[string]any{"prompt_id": "comfy-meta-test-123"}
+			w.Header().Set("Content-Type", "application/json")
+			_ = json.NewEncoder(w).Encode(resp)
+		case r.URL.Path == "/history/comfy-meta-test-123":
+			resp := map[string]any{
+				"comfy-meta-test-123": map[string]any{
+					"outputs": map[string]any{
+						"9": map[string]any{
+							"images": []map[string]any{
+								{"filename": "out_test.png", "subfolder": "", "type": "output"},
+							},
+						},
+					},
+				},
+			}
+			w.Header().Set("Content-Type", "application/json")
+			_ = json.NewEncoder(w).Encode(resp)
+		case r.URL.Path == "/view":
+			w.Header().Set("Content-Type", "image/png")
+			_, _ = w.Write(rawPngBuf.Bytes())
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer comfyServer.Close()
+
+	backend := imgadapter.NewComfyUIBackend(comfyServer.URL, tmpDir, comfyServer.Client())
+
+	spec := &domain.ImageSpec{
+		ID:        "comfy-meta-spec-1",
+		RawPrompt: "a golden retriever in a field",
+	}
+
+	result, err := backend.Generate(context.Background(), spec)
+	if err != nil {
+		t.Fatalf("ComfyUI Generate failed: %v", err)
+	}
+
+	meta, err := imgutil.ExtractPNGMetadataFile(result.LocalPath)
+	if err != nil {
+		t.Fatalf("failed to extract metadata from generated comfyui image: %v", err)
+	}
+
+	promptStr, ok := meta["prompt"]
+	if !ok || promptStr == "" {
+		t.Fatalf("expected 'prompt' metadata in ComfyUI PNG output, got: %+v", meta)
+	}
+
+	workflowStr, ok := meta["workflow"]
+	if !ok || workflowStr == "" {
+		t.Fatalf("expected 'workflow' metadata in ComfyUI PNG output, got: %+v", meta)
+	}
+
+	// Validate they are valid JSON
+	var promptObj map[string]any
+	if err := json.Unmarshal([]byte(promptStr), &promptObj); err != nil {
+		t.Errorf("prompt metadata is not valid JSON: %v", err)
+	}
+
+	var workflowObj map[string]any
+	if err := json.Unmarshal([]byte(workflowStr), &workflowObj); err != nil {
+		t.Errorf("workflow metadata is not valid JSON: %v", err)
+	}
+}
+
 

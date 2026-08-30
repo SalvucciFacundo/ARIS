@@ -42,7 +42,8 @@
 
 ---
 
-## 📦 Milestone 5: ComfyUI Workflow JSON Export (v1.4.0)
+## 📦 Milestone 5: ComfyUI Workflow JSON Export (v1.4.0) — [DONE]
 
-- [ ] **Reproducible Workflow Serialization**: Embed full ComfyUI JSON node graphs inside generated PNG metadata (iTXt chunks).
-- [ ] **Drag-and-Drop Workflow Import**: Drag any ARIS-generated image directly into ComfyUI Web GUI to reload the exact node graph.
+- [x] **Reproducible Workflow Serialization**: Embed full ComfyUI JSON node graphs (`prompt` & `workflow`) inside generated PNG metadata (`tEXt`/`iTXt` chunks).
+- [x] **Drag-and-Drop Workflow Import**: Drag any ARIS-generated image directly into ComfyUI Web GUI to reload the exact visual node graph.
+- [x] **CLI Workflow Tooling (`aris workflow`)**: Subcommands `aris workflow inspect` and `aris workflow export` for extracting generation parameters and raw JSON graphs.

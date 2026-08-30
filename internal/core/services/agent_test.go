@@ -1,9 +1,14 @@
 package services_test
 
 import (
+	"bytes"
 	"context"
+	img "image"
+	imgColor "image/color"
+	imgPNG "image/png"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -12,6 +17,7 @@ import (
 	"aris/internal/adapters/llm"
 	"aris/internal/core/domain"
 	"aris/internal/core/services"
+	"aris/pkg/imgutil"
 )
 
 func TestAgentService_GenerateWorkflow(t *testing.T) {
@@ -266,3 +272,84 @@ func TestAgentService_GenerateUpscaleOptions(t *testing.T) {
 		t.Errorf("expected UpscalerModel RealESRGAN_x4plus, got %s", spec.UpscalerModel)
 	}
 }
+
+type mockPNGBackend struct {
+	outputDir string
+}
+
+func (m *mockPNGBackend) Name() string { return "mock_png" }
+func (m *mockPNGBackend) SupportsModels() []string { return []string{"mock-model"} }
+func (m *mockPNGBackend) Generate(ctx context.Context, spec *domain.ImageSpec) (*domain.ImageResult, error) {
+	rawImg := img.NewRGBA(img.Rect(0, 0, 4, 4))
+	rawImg.Set(0, 0, imgColor.RGBA{R: 200, G: 100, B: 50, A: 255})
+	var buf bytes.Buffer
+	_ = imgPNG.Encode(&buf, rawImg)
+
+	outPath := filepath.Join(m.outputDir, "mock_output.png")
+	if err := os.WriteFile(outPath, buf.Bytes(), 0644); err != nil {
+		return nil, err
+	}
+
+	return &domain.ImageResult{
+		ID:        "mock-res-1",
+		SpecID:    spec.ID,
+		LocalPath: outPath,
+		Format:    "png",
+		Metadata:  map[string]any{},
+	}, nil
+}
+
+func TestAgentService_EmbedsGenerationParametersMetadata(t *testing.T) {
+	tmpDir := t.TempDir()
+	dbPath := filepath.Join(tmpDir, "test.db")
+	sqlDB, err := db.NewSQLiteDB(dbPath)
+	if err != nil {
+		t.Fatalf("failed to init db: %v", err)
+	}
+	defer sqlDB.Close()
+
+	kg := db.NewKnowledgeGraph(sqlDB.DB())
+	history := db.NewHistoryStore(sqlDB.DB())
+	llmProvider := llm.NewPassthroughProvider()
+
+	reg := image.NewRegistry()
+	mockBackend := &mockPNGBackend{outputDir: tmpDir}
+	_ = reg.Register(mockBackend)
+	_ = reg.SetDefault("mock_png")
+
+	agent := services.NewAgentService(llmProvider, reg, kg, history, nil)
+	ctx := context.Background()
+
+	spec, res, err := agent.Generate(ctx, "a futuristic neo-tokyo street at night", services.GenerateOptions{})
+	if err != nil {
+		t.Fatalf("Generate failed: %v", err)
+	}
+	if spec == nil {
+		t.Fatalf("expected non-nil spec")
+	}
+
+	if res == nil || res.LocalPath == "" {
+		t.Fatalf("expected valid image result")
+	}
+
+	meta, err := imgutil.ExtractPNGMetadataFile(res.LocalPath)
+	if err != nil {
+		t.Fatalf("ExtractPNGMetadataFile failed: %v", err)
+	}
+
+	paramsStr, ok := meta["parameters"]
+	if !ok || paramsStr == "" {
+		t.Fatalf("expected 'parameters' metadata embedded in generated PNG, got: %+v", meta)
+	}
+
+	if !strings.Contains(paramsStr, "neo-tokyo") {
+		t.Errorf("expected parameters to contain prompt text, got: %s", paramsStr)
+	}
+	if !strings.Contains(paramsStr, "Steps:") {
+		t.Errorf("expected parameters to contain Steps, got: %s", paramsStr)
+	}
+	if !strings.Contains(paramsStr, "CFG scale:") {
+		t.Errorf("expected parameters to contain CFG scale, got: %s", paramsStr)
+	}
+}
+

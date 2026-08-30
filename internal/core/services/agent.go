@@ -8,6 +8,7 @@ import (
 
 	"aris/internal/core/domain"
 	"aris/internal/core/ports"
+	"aris/pkg/imgutil"
 	"aris/pkg/prompt"
 )
 
@@ -197,12 +198,20 @@ func (s *AgentService) Generate(ctx context.Context, input string, opts Generate
 		}
 	}
 
-	// 5. PERSIST: Save to SQLite History
+	// 5. Embed Universal Generation Parameters metadata into PNG outputs
+	if result != nil && result.LocalPath != "" && strings.HasSuffix(strings.ToLower(result.LocalPath), ".png") {
+		params := FormatGenerationParameters(spec)
+		_ = imgutil.InjectPNGMetadataFile(result.LocalPath, result.LocalPath, map[string]string{
+			"parameters": params,
+		})
+	}
+
+	// 6. PERSIST: Save to SQLite History
 	if s.history != nil {
 		_ = s.history.SaveGeneration(ctx, spec, result)
 	}
 
-	// 6. AUTO-LEARN: Autonomous memory reflection loop (Hermes / GAIA style)
+	// 7. AUTO-LEARN: Autonomous memory reflection loop (Hermes / GAIA style)
 	if s.learner != nil {
 		go func() {
 			bgCtx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
@@ -283,3 +292,54 @@ func (s *AgentService) GetHistory(ctx context.Context, limit, offset int) ([]dom
 	}
 	return s.history.GetHistory(ctx, limit, offset)
 }
+
+// FormatGenerationParameters formats generation parameters following standard A1111/Civitai/ARIS metadata format.
+func FormatGenerationParameters(spec *domain.ImageSpec) string {
+	if spec == nil {
+		return ""
+	}
+	var sb strings.Builder
+	p := spec.EnhancedPrompt
+	if p == "" {
+		p = spec.RawPrompt
+	}
+	sb.WriteString(p)
+
+	if spec.NegativePrompt != "" {
+		sb.WriteString("\nNegative prompt: ")
+		sb.WriteString(spec.NegativePrompt)
+	}
+
+	model := spec.Model
+	if model == "" {
+		model = "default"
+	}
+
+	steps := spec.Steps
+	if steps == 0 {
+		steps = 20
+	}
+
+	cfg := spec.CFGScale
+	if cfg == 0 {
+		cfg = 7.0
+	}
+
+	sb.WriteString(fmt.Sprintf("\nSteps: %d, Sampler: Euler, CFG scale: %.1f, Seed: %d, Size: %dx%d, Model: %s",
+		steps, cfg, spec.Seed, spec.Width, spec.Height, model))
+
+	if spec.Backend != "" {
+		sb.WriteString(fmt.Sprintf(", Backend: %s", spec.Backend))
+	}
+
+	if len(spec.LoRAs) > 0 {
+		loraParts := make([]string, 0, len(spec.LoRAs))
+		for _, l := range spec.LoRAs {
+			loraParts = append(loraParts, fmt.Sprintf("<lora:%s:%.2f>", l.Name, l.Scale))
+		}
+		sb.WriteString(fmt.Sprintf(", LoRAs: %s", strings.Join(loraParts, " ")))
+	}
+
+	return sb.String()
+}
+

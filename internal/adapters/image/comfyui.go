@@ -510,6 +510,40 @@ type comfyHistoryResp map[string]struct {
 	} `json:"outputs"`
 }
 
+// buildUIWorkflowFromPrompt creates a standard ComfyUI UI canvas workflow JSON structure
+// from the execution prompt graph to enable web canvas drag-and-drop loading.
+func buildUIWorkflowFromPrompt(promptGraph map[string]any) map[string]any {
+	nodes := make([]map[string]any, 0, len(promptGraph))
+	var i int
+	for nodeID, val := range promptGraph {
+		nodeData, ok := val.(map[string]any)
+		classType := ""
+		if ok {
+			if ct, ok := nodeData["class_type"].(string); ok {
+				classType = ct
+			}
+		}
+		nodes = append(nodes, map[string]any{
+			"id":    nodeID,
+			"type":  classType,
+			"pos":   []int{100 + (i%4)*250, 100 + (i/4)*200},
+			"size":  []int{220, 120},
+			"flags": map[string]any{},
+			"order": i,
+			"mode":  0,
+		})
+		i++
+	}
+	return map[string]any{
+		"nodes":   nodes,
+		"links":   []any{},
+		"groups":  []any{},
+		"config":  map[string]any{},
+		"extra":   map[string]any{},
+		"version": 0.4,
+	}
+}
+
 func (c *ComfyUIBackend) Generate(ctx context.Context, spec *domain.ImageSpec) (*domain.ImageResult, error) {
 	spec.ApplyDefaults()
 	if err := spec.Validate(); err != nil {
@@ -624,17 +658,30 @@ func (c *ComfyUIBackend) Generate(ctx context.Context, spec *domain.ImageSpec) (
 	filename := fmt.Sprintf("aris_%s_%s_%s.png", now.Format("20060102_150405"), slug, uuid.New().String()[:8])
 	localPath := filepath.Join(dayDir, filename)
 
-	outFile, err := os.Create(localPath)
+	imgBytes, err := io.ReadAll(vResp.Body)
 	if err != nil {
-		return nil, fmt.Errorf("create local image file: %w", err)
+		return nil, fmt.Errorf("read comfyui image body: %w", err)
 	}
-	defer outFile.Close()
 
-	written, err := io.Copy(outFile, vResp.Body)
-	if err != nil {
-		_ = os.Remove(localPath)
+	// Prepare ComfyUI metadata (prompt graph and UI workflow)
+	promptBytes, _ := json.Marshal(graph)
+	uiWorkflow := buildUIWorkflowFromPrompt(graph)
+	workflowBytes, _ := json.Marshal(uiWorkflow)
+
+	metaToInject := map[string]string{
+		"prompt":   string(promptBytes),
+		"workflow": string(workflowBytes),
+	}
+
+	var injectedBuf bytes.Buffer
+	if err := imgutil.InjectPNGMetadata(bytes.NewReader(imgBytes), &injectedBuf, metaToInject); err == nil {
+		imgBytes = injectedBuf.Bytes()
+	}
+
+	if err := os.WriteFile(localPath, imgBytes, 0644); err != nil {
 		return nil, fmt.Errorf("save image bytes: %w", err)
 	}
+	written := int64(len(imgBytes))
 
 	meta := map[string]any{
 		"backend":   "comfyui",

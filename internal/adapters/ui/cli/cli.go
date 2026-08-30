@@ -127,6 +127,8 @@ func (r *Runner) Execute(args []string) int {
 		return r.handleLoRA(args[2:])
 	case "controlnet", "cnet":
 		return r.handleControlNet(args[2:])
+	case "workflow", "wf":
+		return r.handleWorkflow(args[2:])
 	case "subagents", "subagent", "sub":
 		return r.handleSubagents(args[2:])
 	case "backends", "backend":
